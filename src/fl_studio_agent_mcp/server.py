@@ -147,6 +147,7 @@ def create_app(
         snare_channel: int | None = None,
         hat_channel: int | None = None,
         clap_channel: int | None = None,
+        use_velocities: bool = False,
         humanize: int = 6,
     ) -> dict[str, Any]:
         """
@@ -180,12 +181,20 @@ def create_app(
             return velocities
 
         tracks: list[dict[str, Any]] = [
-            {"channel": kick, "on_steps": on_steps(pat.kick), "velocities": vel_map(on_steps(pat.kick), base=110, accent_every=4)},
-            {"channel": snare, "on_steps": on_steps(pat.snare), "velocities": vel_map(on_steps(pat.snare), base=115, accent_every=8)},
-            {"channel": hat, "on_steps": on_steps(pat.hat), "velocities": vel_map(on_steps(pat.hat), base=85, accent_every=2)},
+            {"channel": kick, "on_steps": on_steps(pat.kick)},
+            {"channel": snare, "on_steps": on_steps(pat.snare)},
+            {"channel": hat, "on_steps": on_steps(pat.hat)},
         ]
         if clap is not None and pat.clap:
-            tracks.append({"channel": int(clap), "on_steps": on_steps(pat.clap), "velocities": vel_map(on_steps(pat.clap), base=108, accent_every=8)})
+            tracks.append({"channel": int(clap), "on_steps": on_steps(pat.clap)})
+
+        if use_velocities:
+            # Velocity support can be limited depending on the project's pattern length; keep it opt-in.
+            tracks[0]["velocities"] = vel_map(tracks[0]["on_steps"], base=110, accent_every=4)
+            tracks[1]["velocities"] = vel_map(tracks[1]["on_steps"], base=115, accent_every=8)
+            tracks[2]["velocities"] = vel_map(tracks[2]["on_steps"], base=85, accent_every=2)
+            if clap is not None and pat.clap:
+                tracks[-1]["velocities"] = vel_map(tracks[-1]["on_steps"], base=108, accent_every=8)
 
         res = client.rpc(
             "set_stepseq",

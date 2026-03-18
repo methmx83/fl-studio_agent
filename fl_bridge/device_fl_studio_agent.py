@@ -288,6 +288,7 @@ def _parse_and_dispatch(req) -> dict:
 
             velocities = tr.get("velocities") or {}
             # Step parameter type 1 is velocity (0..127).
+            failed = False
             for k, v in velocities.items():
                 step = int(k)
                 if step < 0 or step >= max_param_steps:
@@ -297,7 +298,12 @@ def _parse_and_dispatch(req) -> dict:
                     vel = 0
                 if vel > 127:
                     vel = 127
-                channels.setStepParameterByIndex(ch, pat_num, step, 1, vel, False)
+                try:
+                    channels.setStepParameterByIndex(ch, pat_num, step, 1, vel, False)
+                except Exception:
+                    # Some projects/patterns expose a smaller step-param range; don't fail the whole request.
+                    failed = True
+                    break
 
         return {
             "ok": True,
