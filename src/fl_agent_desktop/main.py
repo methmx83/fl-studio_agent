@@ -9,9 +9,11 @@ from dataclasses import asdict
 from typing import Any, Callable
 
 from fl_studio_agent_mcp.midi_transport import MidiBridgeClient
+from fl_studio_agent_mcp.patterns import on_steps, render
 from fl_studio_agent_mcp.server import _default_fl_path
 
 from .parse import parse_command
+from .ollama import plan_with_ollama
 
 
 def _require_pyside() -> Any:
@@ -107,6 +109,19 @@ def main(argv: list[str] | None = None) -> int:
     log.setReadOnly(True)
     layout.addWidget(log, 1)
 
+    llm_row = QtWidgets.QHBoxLayout()
+    layout.addLayout(llm_row)
+    chk_llm = QtWidgets.QCheckBox("Use Ollama")
+    ollama_model = QtWidgets.QLineEdit("gemma3:4b")
+    ollama_model.setPlaceholderText("Ollama model (e.g. gemma3:4b)")
+    ollama_url = QtWidgets.QLineEdit("http://localhost:11434/api/chat")
+    ollama_url.setPlaceholderText("Ollama URL (http://localhost:11434/api/chat)")
+    llm_row.addWidget(chk_llm)
+    llm_row.addWidget(QtWidgets.QLabel("Model:"))
+    llm_row.addWidget(ollama_model, 1)
+    llm_row.addWidget(QtWidgets.QLabel("URL:"))
+    llm_row.addWidget(ollama_url, 2)
+
     input_row = QtWidgets.QHBoxLayout()
     layout.addLayout(input_row)
     inp = QtWidgets.QLineEdit()
@@ -156,17 +171,19 @@ def main(argv: list[str] | None = None) -> int:
     def do_drumloop(bpm: float, style: str, bars: int = 1) -> None:
         def work():
             c = ensure_client()
+            total_steps = 16 * bars
+            pat = render(style, total_steps=total_steps, steps_per_bar=16)
             return c.rpc(
                 "set_stepseq",
                 {
                     "bpm": bpm,
                     "steps_per_bar": 16,
                     "bars": bars,
-                    "total_steps": 16 * bars,
+                    "total_steps": total_steps,
                     "tracks": [
-                        {"channel": 0, "on_steps": [0, 4, 8, 12]},
-                        {"channel": 1, "on_steps": [4, 12]},
-                        {"channel": 2, "on_steps": [0, 2, 4, 6, 8, 10, 12, 14]},
+                        {"channel": 0, "on_steps": on_steps(pat.kick)},
+                        {"channel": 1, "on_steps": on_steps(pat.snare)},
+                        {"channel": 2, "on_steps": on_steps(pat.hat)},
                     ],
                 },
                 timeout_s=4.0,
@@ -186,18 +203,34 @@ def main(argv: list[str] | None = None) -> int:
             return
         inp.clear()
         write_line(f"> {text}")
+
+        def apply_plan(launch: bool, create: bool, bpm: float | None, style: str | None, bars: int | None, label: str) -> None:
+            write_line(f"[plan:{label}] launch={launch} create_drumloop={create} bpm={bpm} style={style} bars={bars}")
+            if launch:
+                do_launch()
+            if create:
+                do_drumloop(bpm=bpm or 94.0, style=style or "rock", bars=bars or 1)
+
+        if chk_llm.isChecked():
+            def work():
+                return plan_with_ollama(text, model=ollama_model.text().strip(), url=ollama_url.text().strip())
+
+            def cb(res, err):
+                if err:
+                    write_line(f"[error] ollama: {err}")
+                    cmd = parse_command(text)
+                    write_line(f"[parsed:fallback] {asdict(cmd)}")
+                    apply_plan(cmd.launch, cmd.create_drumloop, cmd.bpm, cmd.style, cmd.bars, "fallback")
+                else:
+                    write_line(f"[ollama] {asdict(res)}")
+                    apply_plan(res.launch, res.create_drumloop, res.bpm, res.style, res.bars, "ollama")
+
+            runner.run(work, lambda r, e: QtCore.QTimer.singleShot(0, lambda: cb(r, e)))
+            return
+
         cmd = parse_command(text)
         write_line(f"[parsed] {asdict(cmd)}")
-
-        if cmd.launch:
-            do_launch()
-
-        if cmd.create_drumloop:
-            bpm = cmd.bpm or 94.0
-            style = cmd.style or "rock"
-            bars = cmd.bars or 1
-            # style currently only affects logging in this minimal UI.
-            do_drumloop(bpm=bpm, style=style, bars=bars)
+        apply_plan(cmd.launch, cmd.create_drumloop, cmd.bpm, cmd.style, cmd.bars, "regex")
 
     btn_connect.clicked.connect(do_connect)
     btn_ping.clicked.connect(do_ping)

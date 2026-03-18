@@ -91,6 +91,15 @@ Run:
 .\scripts\run_desktop_app.ps1
 ```
 
+### LLM mode (Ollama)
+
+The desktop app can optionally use an Ollama model to turn text into a small execution plan. Enable `Use Ollama` and set:
+
+- Model: `gemma3:4b` (works on small GPUs)
+- URL: `http://localhost:11434/api/chat`
+
+If Ollama fails, the app falls back to a deterministic regex parser.
+
 ### File-IPC fallback (if MIDI ports are not visible to Python)
 
 If the system's MIDI stack doesn't expose your virtual port to the Python backend, you can use the file backend:
