@@ -234,6 +234,51 @@ def _parse_and_dispatch(req) -> dict:
             },
         }
 
+    if op == "set_stepseq":
+        bpm = args.get("bpm", None)
+        if bpm is not None:
+            _set_tempo_bpm(float(bpm))
+
+        steps_per_bar = int(args.get("steps_per_bar", 16))
+        bars = int(args.get("bars", 1))
+        total_steps = int(args.get("total_steps", steps_per_bar * bars))
+
+        tracks = args.get("tracks") or []
+        # track: { "channel": int, "on_steps": [int], "velocities": { "step": int } }
+        for tr in tracks:
+            ch = int(tr.get("channel"))
+            # clear
+            for s in range(total_steps):
+                channels.setGridBit(ch, s, False)
+
+        for tr in tracks:
+            ch = int(tr.get("channel"))
+            on_steps = tr.get("on_steps") or []
+            for s in on_steps:
+                channels.setGridBit(ch, int(s), True)
+
+            velocities = tr.get("velocities") or {}
+            # Step parameter type 1 is velocity (0..127). Use setStepParameterByIndex.
+            for k, v in velocities.items():
+                step = int(k)
+                vel = int(v)
+                if vel < 0:
+                    vel = 0
+                if vel > 127:
+                    vel = 127
+                channels.setStepParameterByIndex(step, 1, vel, ch, 0, steps_per_bar)
+
+        return {
+            "ok": True,
+            "result": {
+                "bpm": float(mixer.getCurrentTempo()) / 1000.0,
+                "steps_per_bar": steps_per_bar,
+                "bars": bars,
+                "total_steps": total_steps,
+                "tracks": [{"channel": int(t.get("channel"))} for t in tracks],
+            },
+        }
+
     return {"ok": False, "error": f"Unknown op: {op}"}
 
 

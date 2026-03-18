@@ -46,6 +46,22 @@ python -m venv .venv
 .\.venv\Scripts\python -m fl_studio_agent_mcp.server --midi-port "fl-agent"
 ```
 
+### Recommended on your system (separate in/out names)
+
+```powershell
+.\.venv\Scripts\python -m fl_studio_agent_mcp.server --backend midi --midi-in "fl-agent 0" --midi-out "fl-agent 1"
+```
+
+### Channel mapping (templates)
+
+Create `fl_agent_config.json` by copying `fl_agent_config.example.json`, then run:
+
+```powershell
+.\.venv\Scripts\python -m fl_studio_agent_mcp.server --backend midi --midi-in "fl-agent 0" --midi-out "fl-agent 1" --config .\fl_agent_config.json
+```
+
+This lets the high-level tool `fl_create_4_4_drumloop` target your template's kick/snare/hat channels without hardcoding indices.
+
 ### File-IPC fallback (if MIDI ports are not visible to Python)
 
 If the system's MIDI stack doesn't expose your virtual port to the Python backend, you can use the file backend:

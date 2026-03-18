@@ -1,0 +1,15 @@
+{
+  "midi": {
+    "in": "fl-agent 0",
+    "out": "fl-agent 1"
+  },
+  "template": {
+    "channels": {
+      "kick": 0,
+      "snare": 1,
+      "hat": 2,
+      "clap": 3
+    }
+  }
+}
+

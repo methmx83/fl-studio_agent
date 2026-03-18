@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -10,10 +11,20 @@ from mcp.server.fastmcp import FastMCP
 
 from .file_transport import FileBridgeClient
 from .midi_transport import MidiBridgeClient
+from .patterns import on_steps, render
 
 
 def _default_fl_path() -> str:
     return r"C:\Program Files\Image-Line\FL Studio 2025\FL64.exe"
+
+def _load_config(path: str | None) -> dict:
+    if not path:
+        return {}
+    try:
+        with open(path, "rb") as f:
+            return json.loads(f.read().decode("utf-8", "strict"))
+    except FileNotFoundError:
+        return {}
 
 
 def _pick_port(base: str, names: list[str]) -> str | None:
@@ -70,10 +81,13 @@ def create_app(
     fl_path: str | None = None,
     backend: str = "auto",
     ipc_dir: str | None = None,
+    config_path: str | None = None,
 ) -> FastMCP:
     mcp = FastMCP("fl-studio-agent")
     client = _create_client(backend, midi_port=midi_port, midi_in=midi_in, midi_out=midi_out, ipc_dir=ipc_dir)
     fl_exe = fl_path or _default_fl_path()
+    cfg = _load_config(config_path)
+    chan_cfg = (((cfg.get("template") or {}).get("channels")) or {}) if isinstance(cfg, dict) else {}
 
     @mcp.tool()
     def fl_ping() -> dict[str, Any]:
@@ -123,6 +137,63 @@ def create_app(
         )
         return res.payload
 
+    @mcp.tool()
+    def fl_create_4_4_drumloop(
+        bpm: float = 94.0,
+        style: str = "rock",
+        bars: int = 1,
+        steps_per_bar: int = 16,
+        kick_channel: int | None = None,
+        snare_channel: int | None = None,
+        hat_channel: int | None = None,
+        clap_channel: int | None = None,
+        humanize: int = 6,
+    ) -> dict[str, Any]:
+        """
+        High-level beat tool: create a 4/4 drumloop at `bpm` using a named `style`.
+
+        Uses a template channel mapping (if `--config` is provided) and programs the step sequencer.
+        """
+        if bars < 1:
+            bars = 1
+        if bars > 8:
+            bars = 8
+        if steps_per_bar not in (16,):
+            return {"ok": False, "error": "Only steps_per_bar=16 is supported for now."}
+
+        kick = int(kick_channel if kick_channel is not None else chan_cfg.get("kick", 0))
+        snare = int(snare_channel if snare_channel is not None else chan_cfg.get("snare", 1))
+        hat = int(hat_channel if hat_channel is not None else chan_cfg.get("hat", 2))
+        clap = clap_channel if clap_channel is not None else chan_cfg.get("clap", None)
+
+        total_steps = steps_per_bar * bars
+        pat = render(style, total_steps=total_steps, steps_per_bar=steps_per_bar)
+
+        def vel_map(on: list[int], *, base: int, accent_every: int | None = None) -> dict[str, int]:
+            # Keep deterministic (no RNG) but provide small accents.
+            velocities: dict[str, int] = {}
+            for i, step in enumerate(on):
+                v = base
+                if accent_every and (step % accent_every == 0):
+                    v = min(127, base + humanize)
+                velocities[str(step)] = v
+            return velocities
+
+        tracks: list[dict[str, Any]] = [
+            {"channel": kick, "on_steps": on_steps(pat.kick), "velocities": vel_map(on_steps(pat.kick), base=110, accent_every=4)},
+            {"channel": snare, "on_steps": on_steps(pat.snare), "velocities": vel_map(on_steps(pat.snare), base=115, accent_every=8)},
+            {"channel": hat, "on_steps": on_steps(pat.hat), "velocities": vel_map(on_steps(pat.hat), base=85, accent_every=2)},
+        ]
+        if clap is not None and pat.clap:
+            tracks.append({"channel": int(clap), "on_steps": on_steps(pat.clap), "velocities": vel_map(on_steps(pat.clap), base=108, accent_every=8)})
+
+        res = client.rpc(
+            "set_stepseq",
+            {"bpm": bpm, "steps_per_bar": steps_per_bar, "bars": bars, "total_steps": total_steps, "tracks": tracks},
+            timeout_s=4.0,
+        )
+        return res.payload
+
     return mcp
 
 
@@ -143,6 +214,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--midi-out", default=None, help="Explicit MIDI output port name (overrides --midi-port)")
     parser.add_argument("--ipc-dir", default=None, help="IPC base dir for file backend (default: TEMP\\fl_studio_agent_ipc)")
     parser.add_argument("--fl-path", default=_default_fl_path(), help="Path to FL64.exe")
+    parser.add_argument("--config", default=None, help="Optional JSON config (see fl_agent_config.example.json)")
     args = parser.parse_args(argv)
 
     app = create_app(
@@ -152,6 +224,7 @@ def main(argv: list[str] | None = None) -> int:
         fl_path=args.fl_path,
         backend=args.backend,
         ipc_dir=args.ipc_dir,
+        config_path=args.config,
     )
     app.run()
     return 0
