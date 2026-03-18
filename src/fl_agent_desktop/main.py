@@ -188,6 +188,16 @@ def main(argv: list[str] | None = None) -> int:
     def do_drumloop(bpm: float, style: str, bars: int = 1) -> None:
         def work():
             c = ensure_client()
+            # If FL was just launched, the controller script can take a moment to start responding.
+            for _ in range(40):  # ~20s
+                try:
+                    c.rpc("ping", timeout_s=0.5)
+                    break
+                except Exception:
+                    import time
+
+                    time.sleep(0.5)
+
             total_steps = 16 * bars
             pat = render(style, total_steps=total_steps, steps_per_bar=16)
             return c.rpc(
@@ -203,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
                         {"channel": 2, "on_steps": on_steps(pat.hat)},
                     ],
                 },
-                timeout_s=4.0,
+                timeout_s=6.0,
             ).payload
 
         def cb(res, err):
