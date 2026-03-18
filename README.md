@@ -60,6 +60,7 @@ This uses `%TEMP%\fl_studio_agent_ipc\in` for requests and `%TEMP%\fl_studio_age
 
 - This project uses SysEx messages and a small custom protocol. Payloads are Base64-encoded so they stay 7-bit clean.
 - The bridge is intentionally restrictive: it only exposes specific operations (no arbitrary `exec`).
+- On some FL installs, Python file I/O may be restricted; if the bridge logs `ipc write test: FAILED`, use the MIDI backend instead.
 
 ## Troubleshooting MIDI ports
 
@@ -73,3 +74,7 @@ You should see your `fl-agent` port in **both** lists. If you don't, the Python 
 
 - Confirm `fl-agent` is created in loopMIDI and visible to other WinMM apps.
 - If needed, create a second loopMIDI port and use a two-port setup (future update will support separate in/out names).
+
+### Windows MIDI Service + dynamic ports (March 2026)
+
+Windows 11 has a known issue where dynamically created ports (loopMIDI / teVirtualMIDI) are not visible unless created before the Windows MIDI service starts. A workaround is to restart the `midisrv` service after the port is created (requires Administrator). See Microsoft's known-issues post for details.
