@@ -62,6 +62,8 @@ Create `fl_agent_config.json` by copying `fl_agent_config.example.json`, then ru
 
 This lets the high-level tool `fl_create_4_4_drumloop` target your template's kick/snare/hat channels without hardcoding indices.
 
+The config supports `template.one_based=true` if you prefer writing channels as 1..N (the app/server will subtract 1 internally).
+
 ## Ollama agent (optional)
 
 If you want a simple natural-language CLI that uses an Ollama model to decide which MCP tools to call:

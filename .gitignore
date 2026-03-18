@@ -12,6 +12,7 @@ __pycache__/
 # Logs / debug
 *.log
 fl_agent_debug.txt
+fl_agent_config.json
 
 # OS / editor
 .DS_Store

@@ -42,6 +42,7 @@ def get_style(style: str) -> DrumPattern:
             kick=[1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0],
             snare=[0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
             hat=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            clap=[0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
         )
     if s in ("trap",):
         # simple 8th hats; add one extra kick
@@ -49,6 +50,7 @@ def get_style(style: str) -> DrumPattern:
             kick=[1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 0],
             snare=[0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
             hat=[1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0],
+            clap=[0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
         )
     raise ValueError(f"Unknown style: {style!r}. Try rock/house/hiphop/trap.")
 
@@ -68,4 +70,3 @@ def render(style: str, *, total_steps: int, steps_per_bar: int = 16) -> DrumPatt
 
 def on_steps(bits: list[int]) -> list[int]:
     return [i for i, v in enumerate(bits) if v]
-

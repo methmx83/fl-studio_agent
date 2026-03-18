@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -69,6 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--midi-in", default="fl-agent 0")
     parser.add_argument("--midi-out", default="fl-agent 1")
     parser.add_argument("--fl-path", default=_default_fl_path())
+    parser.add_argument("--config", default="fl_agent_config.json", help="Optional JSON config for channel mapping")
     args = parser.parse_args(argv)
 
     app = QtWidgets.QApplication([])
@@ -108,6 +110,15 @@ def main(argv: list[str] | None = None) -> int:
     conn.addWidget(btn_connect)
     conn.addWidget(btn_ping)
     conn.addWidget(btn_launch)
+
+    cfg_row = QtWidgets.QHBoxLayout()
+    layout.addLayout(cfg_row)
+    cfg_path = QtWidgets.QLineEdit(args.config)
+    cfg_path.setPlaceholderText("fl_agent_config.json")
+    btn_cfg = QtWidgets.QPushButton("Reload config")
+    cfg_row.addWidget(QtWidgets.QLabel("Config:"))
+    cfg_row.addWidget(cfg_path, 1)
+    cfg_row.addWidget(btn_cfg)
 
     # Presets row
     presets = QtWidgets.QHBoxLayout()
@@ -150,6 +161,36 @@ def main(argv: list[str] | None = None) -> int:
     def write_line(s: str) -> None:
         log.appendPlainText(s)
 
+    channel_map: dict[str, int] = {"kick": 0, "snare": 1, "hat": 2, "clap": 3}
+    one_based_cfg = False
+
+    def load_config() -> None:
+        nonlocal channel_map, one_based_cfg
+        p = cfg_path.text().strip()
+        if not p:
+            write_line("[ui] config: (empty)")
+            return
+        if not os.path.exists(p):
+            write_line(f"[ui] config not found: {p}")
+            return
+        try:
+            with open(p, "rb") as f:
+                obj = json.loads(f.read().decode("utf-8", "strict"))
+            tmpl = (obj.get("template") or {}) if isinstance(obj, dict) else {}
+            one_based_cfg = bool(tmpl.get("one_based", False)) if isinstance(tmpl, dict) else False
+            ch = (tmpl.get("channels") or {}) if isinstance(tmpl, dict) else {}
+            if isinstance(ch, dict):
+                channel_map = {k: int(v) for k, v in ch.items() if v is not None}
+            write_line(f"[ui] config loaded: one_based={one_based_cfg} channels={channel_map}")
+        except Exception as e:  # noqa: BLE001
+            write_line(f"[error] config load: {e}")
+
+    def ch(name: str, default: int) -> int:
+        v = int(channel_map.get(name, default))
+        if one_based_cfg:
+            v -= 1
+        return max(0, v)
+
     def ensure_client() -> MidiBridgeClient:
         nonlocal client
         if client is None:
@@ -163,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
             client = None
         ensure_client()
         write_line(f"[ui] connected: in={midi_in.text().strip()} out={midi_out.text().strip()}")
+        load_config()
 
     def do_ping() -> None:
         def work():
@@ -200,6 +242,14 @@ def main(argv: list[str] | None = None) -> int:
 
             total_steps = 16 * bars
             pat = render(style, total_steps=total_steps, steps_per_bar=16)
+            tracks = [
+                {"channel": ch("kick", 0), "on_steps": on_steps(pat.kick)},
+                {"channel": ch("snare", 1), "on_steps": on_steps(pat.snare)},
+                {"channel": ch("hat", 2), "on_steps": on_steps(pat.hat)},
+            ]
+            if pat.clap is not None and "clap" in channel_map:
+                tracks.append({"channel": ch("clap", 3), "on_steps": on_steps(pat.clap)})
+
             return c.rpc(
                 "set_stepseq",
                 {
@@ -207,11 +257,7 @@ def main(argv: list[str] | None = None) -> int:
                     "steps_per_bar": 16,
                     "bars": bars,
                     "total_steps": total_steps,
-                    "tracks": [
-                        {"channel": 0, "on_steps": on_steps(pat.kick)},
-                        {"channel": 1, "on_steps": on_steps(pat.snare)},
-                        {"channel": 2, "on_steps": on_steps(pat.hat)},
-                    ],
+                    "tracks": tracks,
                 },
                 timeout_s=6.0,
             ).payload
@@ -268,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
     btn_launch.clicked.connect(do_launch)
     btn_send.clicked.connect(on_send)
     inp.returnPressed.connect(on_send)
+    btn_cfg.clicked.connect(load_config)
 
     btn_rock.clicked.connect(lambda: do_drumloop(94.0, "rock", 1))
     btn_house.clicked.connect(lambda: do_drumloop(128.0, "house", 1))

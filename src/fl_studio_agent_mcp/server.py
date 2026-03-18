@@ -87,7 +87,19 @@ def create_app(
     client = _create_client(backend, midi_port=midi_port, midi_in=midi_in, midi_out=midi_out, ipc_dir=ipc_dir)
     fl_exe = fl_path or _default_fl_path()
     cfg = _load_config(config_path)
-    chan_cfg = (((cfg.get("template") or {}).get("channels")) or {}) if isinstance(cfg, dict) else {}
+    template_cfg = (cfg.get("template") or {}) if isinstance(cfg, dict) else {}
+    chan_cfg = (template_cfg.get("channels") or {}) if isinstance(template_cfg, dict) else {}
+    one_based = bool(template_cfg.get("one_based", False)) if isinstance(template_cfg, dict) else False
+
+    def _ch(name: str, default: int) -> int:
+        v = chan_cfg.get(name, default)
+        try:
+            n = int(v)
+        except Exception:
+            n = int(default)
+        if one_based:
+            n -= 1
+        return max(0, n)
 
     @mcp.tool()
     def fl_ping() -> dict[str, Any]:
@@ -162,10 +174,16 @@ def create_app(
         if steps_per_bar not in (16,):
             return {"ok": False, "error": "Only steps_per_bar=16 is supported for now."}
 
-        kick = int(kick_channel if kick_channel is not None else chan_cfg.get("kick", 0))
-        snare = int(snare_channel if snare_channel is not None else chan_cfg.get("snare", 1))
-        hat = int(hat_channel if hat_channel is not None else chan_cfg.get("hat", 2))
-        clap = clap_channel if clap_channel is not None else chan_cfg.get("clap", None)
+        kick = int(kick_channel) if kick_channel is not None else _ch("kick", 0)
+        snare = int(snare_channel) if snare_channel is not None else _ch("snare", 1)
+        hat = int(hat_channel) if hat_channel is not None else _ch("hat", 2)
+        clap = clap_channel if clap_channel is not None else (chan_cfg.get("clap", None))
+        if clap is not None:
+            clap = int(clap)
+            if one_based:
+                clap -= 1
+            if clap < 0:
+                clap = None
 
         total_steps = steps_per_bar * bars
         pat = render(style, total_steps=total_steps, steps_per_bar=steps_per_bar)

@@ -4,6 +4,8 @@ param(
   [string]$MidiOut = "fl-agent 1"
   ,
   [string]$FlPath = "C:\\Program Files\\Image-Line\\FL Studio 2025\\FL64.exe"
+  ,
+  [string]$Config = "fl_agent_config.json"
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,7 +24,7 @@ try {
     & $py -m pip install -e ".[ui]"
   }
 
-  & $py -m fl_agent_desktop.main --midi-in $MidiIn --midi-out $MidiOut --fl-path $FlPath
+  & $py -m fl_agent_desktop.main --midi-in $MidiIn --midi-out $MidiOut --fl-path $FlPath --config $Config
 }
 finally {
   Pop-Location

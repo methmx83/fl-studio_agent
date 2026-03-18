@@ -4,12 +4,13 @@
     "out": "fl-agent 1"
   },
   "template": {
+    "one_based": true,
     "channels": {
-      "kick": 0,
-      "snare": 1,
-      "hat": 2,
-      "clap": 3
+      "kick": 1,
+      "clap": 2,
+      "hat": 3,
+      "snare": 4,
+      "bass": 5
     }
   }
 }
-
