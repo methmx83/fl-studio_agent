@@ -17,10 +17,12 @@ MCP server + FL Studio MIDI Scripting bridge for controlling FL Studio 2025.x on
 
 ## Install the FL bridge script
 
-1. Copy the device script into your FL user scripts folder:
+1. Copy the device script into your FL user scripts folder (FL expects a folder + INI entry):
 
    - Destination: `%USERPROFILE%\Documents\Image-Line\FL Studio\Settings\Hardware\`
-   - File: `device_fl_studio_agent.py` (from `fl_bridge\device_fl_studio_agent.py`)
+   - Folder: `device_fl_studio_agent\`
+   - File: `device_fl_studio_agent\device_fl_studio_agent.py` (from `fl_bridge\device_fl_studio_agent.py`)
+   - INI: `device_fl_studio_agent.ini` (minimal content: `[Ini]` + `Version=1`)
 
    Or run:
    ```powershell

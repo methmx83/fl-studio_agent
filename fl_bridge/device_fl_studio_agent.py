@@ -25,6 +25,8 @@ TYPE_ERR = 3
 _chunks = {}  # req_id -> { "count": int, "parts": dict[int, bytes], "ts": float }
 
 _IPC_DIR = None
+_IPC_READY_PRINTED = False
+_IPC_WRITE_TESTED = False
 
 
 def _now_ms() -> int:
@@ -227,10 +229,34 @@ def OnInit():
     except Exception as e:
         print("[fl-agent] getPortNumber failed:", e)
 
+    # IPC debug (some setups restrict file IO; this makes it visible in Script Output)
+    try:
+        base = _ipc_dir()
+        inbox = os.path.join(base, "in")
+        outbox = os.path.join(base, "out")
+        print("[fl-agent] ipc base:", base)
+        print("[fl-agent] ipc inbox exists:", os.path.isdir(inbox))
+        print("[fl-agent] ipc outbox exists:", os.path.isdir(outbox))
+    except Exception as e:
+        print("[fl-agent] ipc init failed:", e)
+
 
 def OnIdle():
+    global _IPC_READY_PRINTED, _IPC_WRITE_TESTED
     _cleanup_chunks()
     _process_ipc_once()
+
+    # One-time file IO probe so we can see whether FL allows reading/writing.
+    if not _IPC_WRITE_TESTED:
+        _IPC_WRITE_TESTED = True
+        try:
+            base = _ipc_dir()
+            test_path = os.path.join(base, "fl_agent_ipc_test.txt")
+            with open(test_path, "wb") as f:
+                f.write(b"ok")
+            print("[fl-agent] ipc write test: OK ->", test_path)
+        except Exception as e:
+            print("[fl-agent] ipc write test: FAILED:", e)
 
 
 def OnSysEx(msg):
