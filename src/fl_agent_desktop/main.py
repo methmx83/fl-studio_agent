@@ -1,0 +1,219 @@
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict
+from typing import Any, Callable
+
+from fl_studio_agent_mcp.midi_transport import MidiBridgeClient
+from fl_studio_agent_mcp.server import _default_fl_path
+
+from .parse import parse_command
+
+
+def _require_pyside() -> Any:
+    try:
+        from PySide6 import QtCore, QtGui, QtWidgets  # type: ignore
+    except Exception as e:  # noqa: BLE001
+        raise SystemExit(
+            "PySide6 is required for the desktop UI.\n"
+            "Install it with:\n"
+            "  .\\.venv\\Scripts\\python -m pip install -e .[ui]\n"
+        ) from e
+    return QtCore, QtGui, QtWidgets
+
+
+class _Runner:
+    def __init__(self) -> None:
+        self._pool = ThreadPoolExecutor(max_workers=1)
+
+    def run(self, fn: Callable[[], Any], cb: Callable[[Any, Exception | None], None]) -> None:
+        fut = self._pool.submit(fn)
+
+        def done(_f):
+            try:
+                res = _f.result()
+                cb(res, None)
+            except Exception as e:  # noqa: BLE001
+                cb(None, e)
+
+        fut.add_done_callback(done)
+
+
+def main(argv: list[str] | None = None) -> int:
+    QtCore, QtGui, QtWidgets = _require_pyside()
+
+    parser = argparse.ArgumentParser(description="FL Studio Agent Desktop UI")
+    parser.add_argument("--midi-in", default="fl-agent 0")
+    parser.add_argument("--midi-out", default="fl-agent 1")
+    parser.add_argument("--fl-path", default=_default_fl_path())
+    args = parser.parse_args(argv)
+
+    app = QtWidgets.QApplication([])
+    app.setApplicationName("FL Studio Agent")
+
+    runner = _Runner()
+    client: MidiBridgeClient | None = None
+
+    win = QtWidgets.QMainWindow()
+    win.setWindowTitle("FL Studio Agent")
+    central = QtWidgets.QWidget()
+    win.setCentralWidget(central)
+
+    layout = QtWidgets.QVBoxLayout(central)
+
+    # Connection row
+    conn = QtWidgets.QHBoxLayout()
+    layout.addLayout(conn)
+
+    midi_in = QtWidgets.QLineEdit(args.midi_in)
+    midi_in.setPlaceholderText("MIDI In (e.g. fl-agent 0)")
+    midi_out = QtWidgets.QLineEdit(args.midi_out)
+    midi_out.setPlaceholderText("MIDI Out (e.g. fl-agent 1)")
+    fl_path = QtWidgets.QLineEdit(args.fl_path)
+    fl_path.setPlaceholderText(r"C:\Program Files\Image-Line\FL Studio 2025\FL64.exe")
+
+    btn_connect = QtWidgets.QPushButton("Connect")
+    btn_ping = QtWidgets.QPushButton("Ping")
+    btn_launch = QtWidgets.QPushButton("Launch FL")
+
+    conn.addWidget(QtWidgets.QLabel("In:"))
+    conn.addWidget(midi_in, 1)
+    conn.addWidget(QtWidgets.QLabel("Out:"))
+    conn.addWidget(midi_out, 1)
+    conn.addWidget(QtWidgets.QLabel("FL64.exe:"))
+    conn.addWidget(fl_path, 2)
+    conn.addWidget(btn_connect)
+    conn.addWidget(btn_ping)
+    conn.addWidget(btn_launch)
+
+    # Presets row
+    presets = QtWidgets.QHBoxLayout()
+    layout.addLayout(presets)
+    btn_rock = QtWidgets.QPushButton("Rock 94 BPM")
+    btn_house = QtWidgets.QPushButton("House 128 BPM")
+    btn_hiphop = QtWidgets.QPushButton("HipHop 92 BPM")
+    btn_trap = QtWidgets.QPushButton("Trap 140 BPM")
+    presets.addWidget(btn_rock)
+    presets.addWidget(btn_house)
+    presets.addWidget(btn_hiphop)
+    presets.addWidget(btn_trap)
+
+    # Log + input
+    log = QtWidgets.QPlainTextEdit()
+    log.setReadOnly(True)
+    layout.addWidget(log, 1)
+
+    input_row = QtWidgets.QHBoxLayout()
+    layout.addLayout(input_row)
+    inp = QtWidgets.QLineEdit()
+    inp.setPlaceholderText('Type: "Open FL Studio and create a 4/4 drumloop at 94 BPM (rock)"')
+    btn_send = QtWidgets.QPushButton("Send")
+    input_row.addWidget(inp, 1)
+    input_row.addWidget(btn_send)
+
+    def write_line(s: str) -> None:
+        log.appendPlainText(s)
+
+    def ensure_client() -> MidiBridgeClient:
+        nonlocal client
+        if client is None:
+            client = MidiBridgeClient(midi_in.text().strip(), midi_out.text().strip())
+        return client
+
+    def do_connect() -> None:
+        nonlocal client
+        if client is not None:
+            client.close()
+            client = None
+        ensure_client()
+        write_line(f"[ui] connected: in={midi_in.text().strip()} out={midi_out.text().strip()}")
+
+    def do_ping() -> None:
+        def work():
+            c = ensure_client()
+            return c.rpc("ping", timeout_s=2.0).payload
+
+        def cb(res, err):
+            if err:
+                write_line(f"[error] ping: {err}")
+            else:
+                write_line(f"[ok] ping: {res}")
+
+        runner.run(work, lambda r, e: QtCore.QTimer.singleShot(0, lambda: cb(r, e)))
+
+    def do_launch() -> None:
+        exe = fl_path.text().strip()
+        if not os.path.exists(exe):
+            write_line(f"[error] FL exe not found: {exe}")
+            return
+        subprocess.Popen([exe], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        write_line("[ui] launched FL Studio")
+
+    def do_drumloop(bpm: float, style: str, bars: int = 1) -> None:
+        def work():
+            c = ensure_client()
+            return c.rpc(
+                "set_stepseq",
+                {
+                    "bpm": bpm,
+                    "steps_per_bar": 16,
+                    "bars": bars,
+                    "total_steps": 16 * bars,
+                    "tracks": [
+                        {"channel": 0, "on_steps": [0, 4, 8, 12]},
+                        {"channel": 1, "on_steps": [4, 12]},
+                        {"channel": 2, "on_steps": [0, 2, 4, 6, 8, 10, 12, 14]},
+                    ],
+                },
+                timeout_s=4.0,
+            ).payload
+
+        def cb(res, err):
+            if err:
+                write_line(f"[error] drumloop: {err}")
+            else:
+                write_line(f"[ok] drumloop ({style}, {bpm} bpm, {bars} bar): {res}")
+
+        runner.run(work, lambda r, e: QtCore.QTimer.singleShot(0, lambda: cb(r, e)))
+
+    def on_send() -> None:
+        text = inp.text().strip()
+        if not text:
+            return
+        inp.clear()
+        write_line(f"> {text}")
+        cmd = parse_command(text)
+        write_line(f"[parsed] {asdict(cmd)}")
+
+        if cmd.launch:
+            do_launch()
+
+        if cmd.create_drumloop:
+            bpm = cmd.bpm or 94.0
+            style = cmd.style or "rock"
+            bars = cmd.bars or 1
+            # style currently only affects logging in this minimal UI.
+            do_drumloop(bpm=bpm, style=style, bars=bars)
+
+    btn_connect.clicked.connect(do_connect)
+    btn_ping.clicked.connect(do_ping)
+    btn_launch.clicked.connect(do_launch)
+    btn_send.clicked.connect(on_send)
+    inp.returnPressed.connect(on_send)
+
+    btn_rock.clicked.connect(lambda: do_drumloop(94.0, "rock", 1))
+    btn_house.clicked.connect(lambda: do_drumloop(128.0, "house", 1))
+    btn_hiphop.clicked.connect(lambda: do_drumloop(92.0, "hiphop", 1))
+    btn_trap.clicked.connect(lambda: do_drumloop(140.0, "trap", 1))
+
+    win.resize(1200, 700)
+    win.show()
+    return app.exec()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

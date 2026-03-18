@@ -10,8 +10,14 @@ dependencies = [
   "python-rtmidi>=1.5.8",
 ]
 
+[project.optional-dependencies]
+ui = [
+  "PySide6>=6.6.0",
+]
+
 [project.scripts]
 fl-studio-agent-mcp = "fl_studio_agent_mcp.server:main"
+fl-studio-agent-desktop = "fl_agent_desktop.main:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

@@ -75,6 +75,22 @@ If you want a simple natural-language CLI that uses an Ollama model to decide wh
 
 This spawns the MCP server via stdio, asks Ollama for tool calls, and prints the tool results as JSON.
 
+## Desktop app (optional)
+
+Minimal Windows desktop UI (chat + preset buttons) that talks to the MIDI bridge directly.
+
+Install deps:
+
+```powershell
+.\.venv\Scripts\python -m pip install -e .[ui]
+```
+
+Run:
+
+```powershell
+.\scripts\run_desktop_app.ps1
+```
+
 ### File-IPC fallback (if MIDI ports are not visible to Python)
 
 If the system's MIDI stack doesn't expose your virtual port to the Python backend, you can use the file backend:
