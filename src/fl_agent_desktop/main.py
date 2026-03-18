@@ -36,7 +36,18 @@ def _make_runner(QtCore: Any) -> Any:
             super().__init__()
             self._pool = ThreadPoolExecutor(max_workers=1)
 
-        def run(self, fn: Callable[[], Any]) -> None:
+        def run(self, fn: Callable[[], Any], cb: Callable[[Any, Exception | None], None] | None = None) -> None:
+            if cb is not None:
+                def _slot(res, err):
+                    try:
+                        self.finished.disconnect(_slot)
+                    except Exception:
+                        pass
+                    cb(res, err)
+
+                # queued to UI thread because `self` lives there
+                self.finished.connect(_slot)
+
             fut = self._pool.submit(fn)
 
             def done(_f):
@@ -164,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 write_line(f"[ok] ping: {res}")
 
-        runner.run(work, lambda r, e: QtCore.QTimer.singleShot(0, lambda: cb(r, e)))
+        runner.run(work, cb)
 
     def do_launch() -> None:
         exe = fl_path.text().strip()
@@ -201,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 write_line(f"[ok] drumloop ({style}, {bpm} bpm, {bars} bar): {res}")
 
-        runner.run(work, lambda r, e: QtCore.QTimer.singleShot(0, lambda: cb(r, e)))
+        runner.run(work, cb)
 
     def on_send() -> None:
         text = inp.text().strip()
@@ -232,17 +243,10 @@ def main(argv: list[str] | None = None) -> int:
                     write_line(f"[ollama] {asdict(res)}")
                     apply_plan(res.launch, res.create_drumloop, res.bpm, res.style, res.bars, "ollama")
 
-            # one-shot connection
-            try:
-                runner.finished.disconnect()
-            except Exception:
-                pass
-            runner.finished.connect(handle_finished)
-
             def work():
                 return plan_with_ollama(text, model=ollama_model.text().strip(), url=ollama_url.text().strip())
 
-            runner.run(work)
+            runner.run(work, handle_finished)
             return
 
         cmd = parse_command(text)
