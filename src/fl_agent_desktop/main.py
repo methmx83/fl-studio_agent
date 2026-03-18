@@ -28,21 +28,27 @@ def _require_pyside() -> Any:
     return QtCore, QtGui, QtWidgets
 
 
-class _Runner:
-    def __init__(self) -> None:
-        self._pool = ThreadPoolExecutor(max_workers=1)
+def _make_runner(QtCore: Any) -> Any:
+    class _Runner(QtCore.QObject):  # type: ignore
+        finished = QtCore.Signal(object, object)  # result, error
 
-    def run(self, fn: Callable[[], Any], cb: Callable[[Any, Exception | None], None]) -> None:
-        fut = self._pool.submit(fn)
+        def __init__(self) -> None:
+            super().__init__()
+            self._pool = ThreadPoolExecutor(max_workers=1)
 
-        def done(_f):
-            try:
-                res = _f.result()
-                cb(res, None)
-            except Exception as e:  # noqa: BLE001
-                cb(None, e)
+        def run(self, fn: Callable[[], Any]) -> None:
+            fut = self._pool.submit(fn)
 
-        fut.add_done_callback(done)
+            def done(_f):
+                try:
+                    res = _f.result()
+                    self.finished.emit(res, None)
+                except Exception as e:  # noqa: BLE001
+                    self.finished.emit(None, e)
+
+            fut.add_done_callback(done)
+
+    return _Runner()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -57,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     app = QtWidgets.QApplication([])
     app.setApplicationName("FL Studio Agent")
 
-    runner = _Runner()
+    runner = _make_runner(QtCore)
     client: MidiBridgeClient | None = None
 
     win = QtWidgets.QMainWindow()
@@ -212,10 +218,11 @@ def main(argv: list[str] | None = None) -> int:
                 do_drumloop(bpm=bpm or 94.0, style=style or "rock", bars=bars or 1)
 
         if chk_llm.isChecked():
-            def work():
-                return plan_with_ollama(text, model=ollama_model.text().strip(), url=ollama_url.text().strip())
+            write_line("[ui] ollama planning...")
+            btn_send.setEnabled(False)
 
-            def cb(res, err):
+            def handle_finished(res, err):
+                btn_send.setEnabled(True)
                 if err:
                     write_line(f"[error] ollama: {err}")
                     cmd = parse_command(text)
@@ -225,7 +232,17 @@ def main(argv: list[str] | None = None) -> int:
                     write_line(f"[ollama] {asdict(res)}")
                     apply_plan(res.launch, res.create_drumloop, res.bpm, res.style, res.bars, "ollama")
 
-            runner.run(work, lambda r, e: QtCore.QTimer.singleShot(0, lambda: cb(r, e)))
+            # one-shot connection
+            try:
+                runner.finished.disconnect()
+            except Exception:
+                pass
+            runner.finished.connect(handle_finished)
+
+            def work():
+                return plan_with_ollama(text, model=ollama_model.text().strip(), url=ollama_url.text().strip())
+
+            runner.run(work)
             return
 
         cmd = parse_command(text)
