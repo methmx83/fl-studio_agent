@@ -171,13 +171,14 @@ def _parse_and_dispatch(req) -> dict:
         return {"ok": True, "result": {"pong": True, "ts_ms": _now_ms()}}
 
     if op == "get_tempo":
-        return {"ok": True, "result": {"bpm": float(mixer.getCurrentTempo())}}
+        # FL returns tempo as BPM * 1000 (e.g. 130000 == 130.000 BPM)
+        return {"ok": True, "result": {"bpm": float(mixer.getCurrentTempo()) / 1000.0}}
 
     if op == "set_tempo":
         bpm = float(args.get("bpm"))
         # API docs indicate mixer.setCurrentTempo exists (not stubbed everywhere)
-        mixer.setCurrentTempo(bpm, 0)
-        return {"ok": True, "result": {"bpm": float(mixer.getCurrentTempo())}}
+        mixer.setCurrentTempo(int(round(bpm * 1000.0)), 1)
+        return {"ok": True, "result": {"bpm": float(mixer.getCurrentTempo()) / 1000.0}}
 
     if op == "create_drum_loop":
         bpm = float(args.get("bpm", 94.0))
@@ -186,7 +187,7 @@ def _parse_and_dispatch(req) -> dict:
         hat = int(args.get("hat_channel", 2))
         steps = int(args.get("steps", 16))
 
-        mixer.setCurrentTempo(bpm, 0)
+        mixer.setCurrentTempo(int(round(bpm * 1000.0)), 1)
 
         # clear + set steps
         for ch in (kick, snare, hat):
@@ -209,7 +210,7 @@ def _parse_and_dispatch(req) -> dict:
         return {
             "ok": True,
             "result": {
-                "bpm": float(mixer.getCurrentTempo()),
+                "bpm": float(mixer.getCurrentTempo()) / 1000.0,
                 "kick_channel": kick,
                 "snare_channel": snare,
                 "hat_channel": hat,
