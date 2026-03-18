@@ -1,0 +1,12 @@
+README.md
+pyproject.toml
+src/fl_studio_agent_mcp/__init__.py
+src/fl_studio_agent_mcp/midi_transport.py
+src/fl_studio_agent_mcp/protocol.py
+src/fl_studio_agent_mcp/server.py
+src/fl_studio_agent_mcp.egg-info/PKG-INFO
+src/fl_studio_agent_mcp.egg-info/SOURCES.txt
+src/fl_studio_agent_mcp.egg-info/dependency_links.txt
+src/fl_studio_agent_mcp.egg-info/entry_points.txt
+src/fl_studio_agent_mcp.egg-info/requires.txt
+src/fl_studio_agent_mcp.egg-info/top_level.txt

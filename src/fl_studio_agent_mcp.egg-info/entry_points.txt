@@ -1,0 +1,2 @@
+[console_scripts]
+fl-studio-agent-mcp = fl_studio_agent_mcp.server:main

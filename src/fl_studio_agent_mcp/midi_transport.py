@@ -26,8 +26,26 @@ class MidiBridgeClient:
         self._inbox: "queue.Queue[tuple[int, dict, int]]" = queue.Queue()
         self._closed = False
 
-        self._in = mido.open_input(port_name)
-        self._out = mido.open_output(port_name)
+        try:
+            self._in = mido.open_input(port_name)
+        except Exception as e:  # noqa: BLE001
+            available_in = mido.get_input_names()
+            available_out = mido.get_output_names()
+            raise RuntimeError(
+                "Failed to open MIDI input port. "
+                f"Requested={port_name!r}. Available inputs={available_in!r}. Available outputs={available_out!r}. "
+                "If your loopMIDI port isn't listed, the Python MIDI backend can't see it on this system."
+            ) from e
+
+        try:
+            self._out = mido.open_output(port_name)
+        except Exception as e:  # noqa: BLE001
+            available_in = mido.get_input_names()
+            available_out = mido.get_output_names()
+            raise RuntimeError(
+                "Failed to open MIDI output port. "
+                f"Requested={port_name!r}. Available inputs={available_in!r}. Available outputs={available_out!r}."
+            ) from e
 
         self._thread = threading.Thread(target=self._reader, name="fl-agent-midi-reader", daemon=True)
         self._thread.start()
@@ -109,4 +127,3 @@ class MidiBridgeClient:
             if rid != req_id:
                 continue
             return RpcResult(ok=(msg_type == TYPE_RES and bool(payload.get("ok", False))), payload=payload, raw_type=msg_type)
-
