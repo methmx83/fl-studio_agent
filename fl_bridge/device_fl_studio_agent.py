@@ -192,6 +192,17 @@ def _parse_and_dispatch(req) -> dict:
         # FL returns tempo as BPM * 1000 (e.g. 130000 == 130.000 BPM)
         return {"ok": True, "result": {"bpm": float(mixer.getCurrentTempo()) / 1000.0}}
 
+    if op == "get_pattern_info":
+        try:
+            pat = int(patterns.patternNumber())
+        except Exception:
+            pat = 1
+        try:
+            length_beats = int(patterns.getPatternLength(pat))
+        except Exception:
+            length_beats = None
+        return {"ok": True, "result": {"pattern": pat, "length_beats": length_beats}}
+
     if op == "set_tempo":
         bpm = float(args.get("bpm"))
         _set_tempo_bpm(bpm)
