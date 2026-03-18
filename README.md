@@ -62,6 +62,19 @@ Create `fl_agent_config.json` by copying `fl_agent_config.example.json`, then ru
 
 This lets the high-level tool `fl_create_4_4_drumloop` target your template's kick/snare/hat channels without hardcoding indices.
 
+## Ollama agent (optional)
+
+If you want a simple natural-language CLI that uses an Ollama model to decide which MCP tools to call:
+
+1. Start Ollama and ensure your model is available (example model: `llama3.2`).
+2. Run:
+
+```powershell
+.\scripts\run_ollama_agent.ps1 -Model llama3.2 -Request "Open FL Studio and create a 4/4 drumloop at 94 BPM"
+```
+
+This spawns the MCP server via stdio, asks Ollama for tool calls, and prints the tool results as JSON.
+
 ### File-IPC fallback (if MIDI ports are not visible to Python)
 
 If the system's MIDI stack doesn't expose your virtual port to the Python backend, you can use the file backend:
