@@ -242,6 +242,7 @@ def _parse_and_dispatch(req) -> dict:
         steps_per_bar = int(args.get("steps_per_bar", 16))
         bars = int(args.get("bars", 1))
         total_steps = int(args.get("total_steps", steps_per_bar * bars))
+        pat_num = int(args.get("pat_num", 1))  # 1-indexed
 
         tracks = args.get("tracks") or []
         # track: { "channel": int, "on_steps": [int], "velocities": { "step": int } }
@@ -258,7 +259,7 @@ def _parse_and_dispatch(req) -> dict:
                 channels.setGridBit(ch, int(s), True)
 
             velocities = tr.get("velocities") or {}
-            # Step parameter type 1 is velocity (0..127). Use setStepParameterByIndex.
+            # Step parameter type 1 is velocity (0..127).
             for k, v in velocities.items():
                 step = int(k)
                 vel = int(v)
@@ -266,7 +267,7 @@ def _parse_and_dispatch(req) -> dict:
                     vel = 0
                 if vel > 127:
                     vel = 127
-                channels.setStepParameterByIndex(step, 1, vel, ch, 0, steps_per_bar)
+                channels.setStepParameterByIndex(ch, pat_num, step, 1, vel, False)
 
         return {
             "ok": True,
@@ -275,6 +276,7 @@ def _parse_and_dispatch(req) -> dict:
                 "steps_per_bar": steps_per_bar,
                 "bars": bars,
                 "total_steps": total_steps,
+                "pat_num": pat_num,
                 "tracks": [{"channel": int(t.get("channel"))} for t in tracks],
             },
         }
