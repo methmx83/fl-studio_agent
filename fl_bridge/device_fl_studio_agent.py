@@ -5,6 +5,7 @@
 
 import base64
 import json
+import os
 import time
 
 import channels
@@ -22,6 +23,8 @@ TYPE_ERR = 3
 
 # simple chunk reassembly by request id
 _chunks = {}  # req_id -> { "count": int, "parts": dict[int, bytes], "ts": float }
+
+_IPC_DIR = None
 
 
 def _now_ms() -> int:
@@ -86,6 +89,76 @@ def _cleanup_chunks() -> None:
             dead.append(rid)
     for rid in dead:
         del _chunks[rid]
+
+def _ipc_dir() -> str:
+    global _IPC_DIR
+    if _IPC_DIR is not None:
+        return _IPC_DIR
+
+    # Prefer the user's TEMP. If unavailable, fall back to a deterministic path.
+    tmp = os.environ.get("TEMP") or os.environ.get("TMP")
+    if not tmp:
+        tmp = r"C:\Temp"
+    base = os.path.join(tmp, "fl_studio_agent_ipc")
+    inbox = os.path.join(base, "in")
+    outbox = os.path.join(base, "out")
+    try:
+        os.makedirs(inbox, exist_ok=True)
+        os.makedirs(outbox, exist_ok=True)
+    except Exception:
+        # directory creation might fail under some permission flags; keep path anyway
+        pass
+    _IPC_DIR = base
+    return base
+
+
+def _process_ipc_once() -> None:
+    base = _ipc_dir()
+    inbox = os.path.join(base, "in")
+    outbox = os.path.join(base, "out")
+    try:
+        names = os.listdir(inbox)
+    except Exception:
+        return
+
+    # process a single request per idle tick to keep OnIdle fast
+    req_name = None
+    for n in names:
+        if n.startswith("req_") and n.endswith(".json"):
+            req_name = n
+            break
+    if req_name is None:
+        return
+
+    req_path = os.path.join(inbox, req_name)
+    try:
+        with open(req_path, "rb") as f:
+            req = json.loads(f.read().decode("utf-8", "strict"))
+    except Exception as e:
+        try:
+            os.remove(req_path)
+        except Exception:
+            pass
+        return
+
+    try:
+        os.remove(req_path)
+    except Exception:
+        pass
+
+    req_id = int(req.get("id", 0))
+    try:
+        res = _parse_and_dispatch({"op": req.get("op"), "args": req.get("args") or {}})
+    except TypeError as e:
+        res = {"ok": False, "error": str(e)}
+    except Exception as e:
+        res = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    try:
+        with open(os.path.join(outbox, f"res_{req_id}.json"), "wb") as f:
+            f.write(json.dumps(res, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    except Exception:
+        pass
 
 
 def _parse_and_dispatch(req) -> dict:
@@ -157,6 +230,7 @@ def OnInit():
 
 def OnIdle():
     _cleanup_chunks()
+    _process_ipc_once()
 
 
 def OnSysEx(msg):
@@ -207,4 +281,3 @@ def OnSysEx(msg):
             _send(TYPE_ERR, 0, {"ok": False, "error": f"{type(e).__name__}: {e}"})
         except Exception:
             pass
-

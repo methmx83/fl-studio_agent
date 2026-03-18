@@ -8,6 +8,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from .file_transport import FileBridgeClient
 from .midi_transport import MidiBridgeClient
 
 
@@ -15,9 +16,22 @@ def _default_fl_path() -> str:
     return r"C:\Program Files\Image-Line\FL Studio 2025\FL64.exe"
 
 
-def create_app(midi_port: str, *, fl_path: str | None = None) -> FastMCP:
+def _create_client(backend: str, *, midi_port: str, ipc_dir: str | None) -> Any:
+    if backend == "file":
+        return FileBridgeClient(ipc_dir)
+    if backend == "midi":
+        return MidiBridgeClient(midi_port)
+    if backend == "auto":
+        try:
+            return MidiBridgeClient(midi_port)
+        except Exception:
+            return FileBridgeClient(ipc_dir)
+    raise ValueError(f"Unknown backend: {backend!r}")
+
+
+def create_app(midi_port: str, *, fl_path: str | None = None, backend: str = "auto", ipc_dir: str | None = None) -> FastMCP:
     mcp = FastMCP("fl-studio-agent")
-    client = MidiBridgeClient(midi_port)
+    client = _create_client(backend, midi_port=midi_port, ipc_dir=ipc_dir)
     fl_exe = fl_path or _default_fl_path()
 
     @mcp.tool()
@@ -73,15 +87,21 @@ def create_app(midi_port: str, *, fl_path: str | None = None) -> FastMCP:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="FL Studio Agent MCP server")
+    parser.add_argument(
+        "--backend",
+        default="auto",
+        choices=["auto", "midi", "file"],
+        help="Bridge backend: midi (SysEx), file (TEMP polling), or auto (try midi then file).",
+    )
     parser.add_argument("--midi-port", default="fl-agent", help="loopMIDI port name (e.g. fl-agent)")
+    parser.add_argument("--ipc-dir", default=None, help="IPC base dir for file backend (default: TEMP\\fl_studio_agent_ipc)")
     parser.add_argument("--fl-path", default=_default_fl_path(), help="Path to FL64.exe")
     args = parser.parse_args(argv)
 
-    app = create_app(args.midi_port, fl_path=args.fl_path)
+    app = create_app(args.midi_port, fl_path=args.fl_path, backend=args.backend, ipc_dir=args.ipc_dir)
     app.run()
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-

@@ -44,6 +44,16 @@ python -m venv .venv
 .\.venv\Scripts\python -m fl_studio_agent_mcp.server --midi-port "fl-agent"
 ```
 
+### File-IPC fallback (if MIDI ports are not visible to Python)
+
+If the system's MIDI stack doesn't expose your virtual port to the Python backend, you can use the file backend:
+
+```powershell
+.\.venv\Scripts\python -m fl_studio_agent_mcp.server --backend file
+```
+
+This uses `%TEMP%\fl_studio_agent_ipc\in` for requests and `%TEMP%\fl_studio_agent_ipc\out` for responses. The FL bridge processes one request per `OnIdle` tick.
+
 ## Notes
 
 - This project uses SysEx messages and a small custom protocol. Payloads are Base64-encoded so they stay 7-bit clean.
