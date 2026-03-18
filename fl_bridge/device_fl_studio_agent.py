@@ -11,6 +11,7 @@ import time
 import channels
 import device
 import mixer
+import patterns
 
 
 MANUFACTURER_ID = 0x7D  # non-commercial
@@ -242,7 +243,23 @@ def _parse_and_dispatch(req) -> dict:
         steps_per_bar = int(args.get("steps_per_bar", 16))
         bars = int(args.get("bars", 1))
         total_steps = int(args.get("total_steps", steps_per_bar * bars))
-        pat_num = int(args.get("pat_num", 1))  # 1-indexed
+        # 1-indexed pattern number. Default to the currently active pattern.
+        pat_num = args.get("pat_num", None)
+        if pat_num is None:
+            try:
+                pat_num = patterns.patternNumber()
+            except Exception:
+                pat_num = 1
+        pat_num = int(pat_num)
+
+        try:
+            pattern_len_beats = int(patterns.getPatternLength(pat_num))
+        except Exception:
+            pattern_len_beats = 4
+        if pattern_len_beats < 1:
+            pattern_len_beats = 1
+        # setStepParameterByIndex appears to be limited to the pattern length.
+        max_param_steps = pattern_len_beats * 4
 
         tracks = args.get("tracks") or []
         # track: { "channel": int, "on_steps": [int], "velocities": { "step": int } }
@@ -262,6 +279,8 @@ def _parse_and_dispatch(req) -> dict:
             # Step parameter type 1 is velocity (0..127).
             for k, v in velocities.items():
                 step = int(k)
+                if step < 0 or step >= max_param_steps:
+                    continue
                 vel = int(v)
                 if vel < 0:
                     vel = 0
@@ -277,6 +296,8 @@ def _parse_and_dispatch(req) -> dict:
                 "bars": bars,
                 "total_steps": total_steps,
                 "pat_num": pat_num,
+                "pattern_len_beats": pattern_len_beats,
+                "max_param_steps": max_param_steps,
                 "tracks": [{"channel": int(t.get("channel"))} for t in tracks],
             },
         }
