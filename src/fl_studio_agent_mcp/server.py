@@ -217,6 +217,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=None, help="Optional JSON config (see fl_agent_config.example.json)")
     args = parser.parse_args(argv)
 
+    # Allow config to provide default MIDI port names.
+    cfg = _load_config(args.config)
+    if isinstance(cfg, dict):
+        midi_cfg = cfg.get("midi") or {}
+        if args.midi_in is None and isinstance(midi_cfg, dict) and midi_cfg.get("in"):
+            args.midi_in = str(midi_cfg.get("in"))
+        if args.midi_out is None and isinstance(midi_cfg, dict) and midi_cfg.get("out"):
+            args.midi_out = str(midi_cfg.get("out"))
+
     app = create_app(
         args.midi_port,
         midi_in=args.midi_in,
