@@ -167,6 +167,23 @@ def _parse_and_dispatch(req) -> dict:
     op = req.get("op")
     args = req.get("args") or {}
 
+    def _set_tempo_bpm(bpm: float) -> None:
+        # FL returns tempo as BPM*1000. setCurrentTempo behavior varies across versions/builds,
+        # so try a few safe call patterns.
+        last_err = None
+        for value, as_int in (
+            (bpm, 0),
+            (int(round(bpm * 1000.0)), 0),
+            (int(round(bpm * 1000.0)), 1),
+        ):
+            try:
+                mixer.setCurrentTempo(value, as_int)
+                return
+            except Exception as e:
+                last_err = e
+        if last_err is not None:
+            raise last_err
+
     if op == "ping":
         return {"ok": True, "result": {"pong": True, "ts_ms": _now_ms()}}
 
@@ -176,8 +193,7 @@ def _parse_and_dispatch(req) -> dict:
 
     if op == "set_tempo":
         bpm = float(args.get("bpm"))
-        # API docs indicate mixer.setCurrentTempo exists (not stubbed everywhere)
-        mixer.setCurrentTempo(int(round(bpm * 1000.0)), 1)
+        _set_tempo_bpm(bpm)
         return {"ok": True, "result": {"bpm": float(mixer.getCurrentTempo()) / 1000.0}}
 
     if op == "create_drum_loop":
@@ -187,7 +203,7 @@ def _parse_and_dispatch(req) -> dict:
         hat = int(args.get("hat_channel", 2))
         steps = int(args.get("steps", 16))
 
-        mixer.setCurrentTempo(int(round(bpm * 1000.0)), 1)
+        _set_tempo_bpm(bpm)
 
         # clear + set steps
         for ch in (kick, snare, hat):
