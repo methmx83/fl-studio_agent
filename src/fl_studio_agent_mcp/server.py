@@ -159,6 +159,8 @@ def create_app(
         snare_channel: int | None = None,
         hat_channel: int | None = None,
         clap_channel: int | None = None,
+        bass_channel: int | None = None,
+        include_bass: bool = True,
         use_velocities: bool = False,
         humanize: int = 6,
     ) -> dict[str, Any]:
@@ -184,6 +186,13 @@ def create_app(
                 clap -= 1
             if clap < 0:
                 clap = None
+        bass = bass_channel if bass_channel is not None else (chan_cfg.get("bass", None))
+        if bass is not None:
+            bass = int(bass)
+            if one_based:
+                bass -= 1
+            if bass < 0:
+                bass = None
 
         total_steps = steps_per_bar * bars
         pat = render(style, total_steps=total_steps, steps_per_bar=steps_per_bar)
@@ -205,6 +214,8 @@ def create_app(
         ]
         if clap is not None and pat.clap:
             tracks.append({"channel": int(clap), "on_steps": on_steps(pat.clap)})
+        if include_bass and bass is not None and pat.bass:
+            tracks.append({"channel": int(bass), "on_steps": on_steps(pat.bass)})
 
         if use_velocities:
             # Velocity support can be limited depending on the project's pattern length; keep it opt-in.

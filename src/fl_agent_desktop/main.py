@@ -161,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     def write_line(s: str) -> None:
         log.appendPlainText(s)
 
-    channel_map: dict[str, int] = {"kick": 0, "snare": 1, "hat": 2, "clap": 3}
+    channel_map: dict[str, int] = {"kick": 0, "snare": 1, "hat": 2, "clap": 3, "bass": 4}
     one_based_cfg = False
 
     def load_config() -> None:
@@ -249,6 +249,8 @@ def main(argv: list[str] | None = None) -> int:
             ]
             if pat.clap is not None and "clap" in channel_map:
                 tracks.append({"channel": ch("clap", 3), "on_steps": on_steps(pat.clap)})
+            if pat.bass is not None and "bass" in channel_map:
+                tracks.append({"channel": ch("bass", 4), "on_steps": on_steps(pat.bass)})
 
             return c.rpc(
                 "set_stepseq",

@@ -9,6 +9,7 @@ class DrumPattern:
     snare: list[int]
     hat: list[int]
     clap: list[int] | None = None
+    bass: list[int] | None = None
 
 
 def _repeat(base: list[int], total_steps: int) -> list[int]:
@@ -30,12 +31,14 @@ def get_style(style: str) -> DrumPattern:
             kick=[1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
             snare=[0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
             hat=[1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0],
+            bass=[1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
         )
     if s in ("house", "four_on_the_floor", "4otf"):
         return DrumPattern(
             kick=[1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
             snare=[0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
             hat=[0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0],
+            bass=[0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
         )
     if s in ("hiphop", "boom_bap", "boom-bap"):
         return DrumPattern(
@@ -43,6 +46,7 @@ def get_style(style: str) -> DrumPattern:
             snare=[0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
             hat=[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
             clap=[0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+            bass=[1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
         )
     if s in ("trap",):
         # simple 8th hats; add one extra kick
@@ -51,6 +55,7 @@ def get_style(style: str) -> DrumPattern:
             snare=[0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
             hat=[1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0],
             clap=[0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
+            bass=[1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
         )
     raise ValueError(f"Unknown style: {style!r}. Try rock/house/hiphop/trap.")
 
@@ -65,6 +70,7 @@ def render(style: str, *, total_steps: int, steps_per_bar: int = 16) -> DrumPatt
         snare=_repeat(base.snare, total_steps),
         hat=_repeat(base.hat, total_steps),
         clap=_repeat(base.clap, total_steps) if base.clap else None,
+        bass=_repeat(base.bass, total_steps) if base.bass else None,
     )
 
 
