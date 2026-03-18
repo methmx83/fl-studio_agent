@@ -18,8 +18,9 @@ class RpcResult:
 
 
 class MidiBridgeClient:
-    def __init__(self, port_name: str, *, debug: bool = False):
-        self._port_name = port_name
+    def __init__(self, midi_in: str, midi_out: str | None = None, *, debug: bool = False):
+        self._midi_in = midi_in
+        self._midi_out = midi_out or midi_in
         self._debug = debug
         self._req_id = 1
         self._lock = threading.Lock()
@@ -27,24 +28,24 @@ class MidiBridgeClient:
         self._closed = False
 
         try:
-            self._in = mido.open_input(port_name)
+            self._in = mido.open_input(self._midi_in)
         except Exception as e:  # noqa: BLE001
             available_in = mido.get_input_names()
             available_out = mido.get_output_names()
             raise RuntimeError(
                 "Failed to open MIDI input port. "
-                f"Requested={port_name!r}. Available inputs={available_in!r}. Available outputs={available_out!r}. "
+                f"Requested={self._midi_in!r}. Available inputs={available_in!r}. Available outputs={available_out!r}. "
                 "If your loopMIDI port isn't listed, the Python MIDI backend can't see it on this system."
             ) from e
 
         try:
-            self._out = mido.open_output(port_name)
+            self._out = mido.open_output(self._midi_out)
         except Exception as e:  # noqa: BLE001
             available_in = mido.get_input_names()
             available_out = mido.get_output_names()
             raise RuntimeError(
                 "Failed to open MIDI output port. "
-                f"Requested={port_name!r}. Available inputs={available_in!r}. Available outputs={available_out!r}."
+                f"Requested={self._midi_out!r}. Available inputs={available_in!r}. Available outputs={available_out!r}."
             ) from e
 
         self._thread = threading.Thread(target=self._reader, name="fl-agent-midi-reader", daemon=True)

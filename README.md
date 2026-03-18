@@ -75,6 +75,12 @@ You should see your `fl-agent` port in **both** lists. If you don't, the Python 
 - Confirm `fl-agent` is created in loopMIDI and visible to other WinMM apps.
 - If needed, create a second loopMIDI port and use a two-port setup (future update will support separate in/out names).
 
+If your system exposes different names for input and output (e.g. `fl-agent 0` vs `fl-agent 1`), pin them explicitly:
+
+```powershell
+.\.venv\Scripts\python -m fl_studio_agent_mcp.server --backend midi --midi-in "fl-agent 0" --midi-out "fl-agent 1"
+```
+
 ### Windows MIDI Service + dynamic ports (March 2026)
 
 Windows 11 has a known issue where dynamically created ports (loopMIDI / teVirtualMIDI) are not visible unless created before the Windows MIDI service starts. A workaround is to restart the `midisrv` service after the port is created (requires Administrator). See Microsoft's known-issues post for details.

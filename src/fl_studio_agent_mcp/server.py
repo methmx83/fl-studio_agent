@@ -16,22 +16,63 @@ def _default_fl_path() -> str:
     return r"C:\Program Files\Image-Line\FL Studio 2025\FL64.exe"
 
 
-def _create_client(backend: str, *, midi_port: str, ipc_dir: str | None) -> Any:
+def _pick_port(base: str, names: list[str]) -> str | None:
+    # Prefer prefix matches, then substring matches.
+    base_l = base.lower()
+    for n in names:
+        if n.lower().startswith(base_l):
+            return n
+    for n in names:
+        if base_l in n.lower():
+            return n
+    return None
+
+
+def _create_client(
+    backend: str,
+    *,
+    midi_port: str,
+    midi_in: str | None,
+    midi_out: str | None,
+    ipc_dir: str | None,
+) -> Any:
     if backend == "file":
         return FileBridgeClient(ipc_dir)
     if backend == "midi":
-        return MidiBridgeClient(midi_port)
+        if midi_in and midi_out:
+            return MidiBridgeClient(midi_in, midi_out)
+        if midi_in and not midi_out:
+            return MidiBridgeClient(midi_in, midi_in)
+        # auto-pick from base
+        import mido
+
+        chosen_in = _pick_port(midi_port, mido.get_input_names())
+        chosen_out = _pick_port(midi_port, mido.get_output_names())
+        if not chosen_in or not chosen_out:
+            raise RuntimeError(
+                f"Could not auto-pick MIDI ports for base {midi_port!r}. "
+                f"Inputs={mido.get_input_names()!r} Outputs={mido.get_output_names()!r}"
+            )
+        return MidiBridgeClient(chosen_in, chosen_out)
     if backend == "auto":
         try:
-            return MidiBridgeClient(midi_port)
+            return _create_client("midi", midi_port=midi_port, midi_in=midi_in, midi_out=midi_out, ipc_dir=ipc_dir)
         except Exception:
             return FileBridgeClient(ipc_dir)
     raise ValueError(f"Unknown backend: {backend!r}")
 
 
-def create_app(midi_port: str, *, fl_path: str | None = None, backend: str = "auto", ipc_dir: str | None = None) -> FastMCP:
+def create_app(
+    midi_port: str,
+    *,
+    midi_in: str | None = None,
+    midi_out: str | None = None,
+    fl_path: str | None = None,
+    backend: str = "auto",
+    ipc_dir: str | None = None,
+) -> FastMCP:
     mcp = FastMCP("fl-studio-agent")
-    client = _create_client(backend, midi_port=midi_port, ipc_dir=ipc_dir)
+    client = _create_client(backend, midi_port=midi_port, midi_in=midi_in, midi_out=midi_out, ipc_dir=ipc_dir)
     fl_exe = fl_path or _default_fl_path()
 
     @mcp.tool()
@@ -93,12 +134,25 @@ def main(argv: list[str] | None = None) -> int:
         choices=["auto", "midi", "file"],
         help="Bridge backend: midi (SysEx), file (TEMP polling), or auto (try midi then file).",
     )
-    parser.add_argument("--midi-port", default="fl-agent", help="loopMIDI port name (e.g. fl-agent)")
+    parser.add_argument(
+        "--midi-port",
+        default="fl-agent",
+        help="Base MIDI port name to auto-pick input/output (e.g. fl-agent).",
+    )
+    parser.add_argument("--midi-in", default=None, help="Explicit MIDI input port name (overrides --midi-port)")
+    parser.add_argument("--midi-out", default=None, help="Explicit MIDI output port name (overrides --midi-port)")
     parser.add_argument("--ipc-dir", default=None, help="IPC base dir for file backend (default: TEMP\\fl_studio_agent_ipc)")
     parser.add_argument("--fl-path", default=_default_fl_path(), help="Path to FL64.exe")
     args = parser.parse_args(argv)
 
-    app = create_app(args.midi_port, fl_path=args.fl_path, backend=args.backend, ipc_dir=args.ipc_dir)
+    app = create_app(
+        args.midi_port,
+        midi_in=args.midi_in,
+        midi_out=args.midi_out,
+        fl_path=args.fl_path,
+        backend=args.backend,
+        ipc_dir=args.ipc_dir,
+    )
     app.run()
     return 0
 
