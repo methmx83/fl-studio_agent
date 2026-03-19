@@ -7,14 +7,23 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
+from functools import partial
 from typing import Any, Callable
 
 from fl_studio_agent_mcp.midi_transport import MidiBridgeClient
 from fl_studio_agent_mcp.patterns import on_steps, render
 from fl_studio_agent_mcp.server import _default_fl_path
 
+from .pattern_preview import pattern_preview_lines
 from .parse import parse_command
 from .ollama import plan_with_ollama
+from .ui_state import (
+    DEFAULT_CHANNEL_MAP,
+    PRESET_SETTINGS,
+    STYLE_OPTIONS,
+    mapping_label_text,
+    resolved_loop_settings,
+)
 
 
 def _require_pyside() -> Any:
@@ -120,6 +129,55 @@ def main(argv: list[str] | None = None) -> int:
     cfg_row.addWidget(cfg_path, 1)
     cfg_row.addWidget(btn_cfg)
 
+    performance = QtWidgets.QHBoxLayout()
+    layout.addLayout(performance)
+    bpm_input = QtWidgets.QDoubleSpinBox()
+    bpm_input.setRange(40.0, 240.0)
+    bpm_input.setDecimals(1)
+    bpm_input.setSingleStep(1.0)
+    bpm_input.setValue(94.0)
+    bars_input = QtWidgets.QSpinBox()
+    bars_input.setRange(1, 16)
+    bars_input.setValue(1)
+    style_input = QtWidgets.QComboBox()
+    style_input.addItems(list(STYLE_OPTIONS))
+    btn_create = QtWidgets.QPushButton("Create Loop")
+    btn_panic = QtWidgets.QPushButton("Stop / Panic")
+    btn_panic.setEnabled(False)
+    btn_panic.setToolTip("Reserved for a future transport-stop + clear-pattern action.")
+    performance.addWidget(QtWidgets.QLabel("BPM:"))
+    performance.addWidget(bpm_input)
+    performance.addWidget(QtWidgets.QLabel("Bars:"))
+    performance.addWidget(bars_input)
+    performance.addWidget(QtWidgets.QLabel("Style:"))
+    performance.addWidget(style_input, 1)
+    performance.addWidget(btn_create)
+    performance.addWidget(btn_panic)
+
+    preview_box = QtWidgets.QGroupBox("Pattern Preview")
+    preview_layout = QtWidgets.QVBoxLayout(preview_box)
+    preview = QtWidgets.QPlainTextEdit()
+    preview.setReadOnly(True)
+    preview.setMaximumBlockCount(16)
+    preview.setMinimumHeight(130)
+    preview_layout.addWidget(preview)
+    layout.addWidget(preview_box)
+
+    mapping_box = QtWidgets.QGroupBox("Template Mapping")
+    mapping_layout = QtWidgets.QFormLayout(mapping_box)
+    mapping_status = QtWidgets.QLabel("Config not loaded")
+    mapping_labels = {
+        "kick": QtWidgets.QLabel("-"),
+        "clap": QtWidgets.QLabel("-"),
+        "hat": QtWidgets.QLabel("-"),
+        "snare": QtWidgets.QLabel("-"),
+        "bass": QtWidgets.QLabel("-"),
+    }
+    mapping_layout.addRow("Status:", mapping_status)
+    for key, label in mapping_labels.items():
+        mapping_layout.addRow(f"{key.title()}:", label)
+    layout.addWidget(mapping_box)
+
     # Presets row
     presets = QtWidgets.QHBoxLayout()
     layout.addLayout(presets)
@@ -154,24 +212,40 @@ def main(argv: list[str] | None = None) -> int:
     layout.addLayout(input_row)
     inp = QtWidgets.QLineEdit()
     inp.setPlaceholderText('Type: "Open FL Studio and create a 4/4 drumloop at 94 BPM (rock)"')
+    btn_preview_prompt = QtWidgets.QPushButton("Preview Prompt")
     btn_send = QtWidgets.QPushButton("Send")
     input_row.addWidget(inp, 1)
+    input_row.addWidget(btn_preview_prompt)
     input_row.addWidget(btn_send)
 
     def write_line(s: str) -> None:
         log.appendPlainText(s)
 
-    channel_map: dict[str, int] = {"kick": 0, "snare": 1, "hat": 2, "clap": 3, "bass": 4}
+    channel_map: dict[str, int] = dict(DEFAULT_CHANNEL_MAP)
     one_based_cfg = False
+
+    def reset_channel_map() -> None:
+        nonlocal channel_map, one_based_cfg
+        channel_map = dict(DEFAULT_CHANNEL_MAP)
+        one_based_cfg = False
+
+    def update_mapping_panel(status: str) -> None:
+        mapping_status.setText(status)
+        for name, label in mapping_labels.items():
+            label.setText(mapping_label_text(name, channel_map, one_based_cfg))
 
     def load_config() -> None:
         nonlocal channel_map, one_based_cfg
         p = cfg_path.text().strip()
         if not p:
+            reset_channel_map()
             write_line("[ui] config: (empty)")
+            update_mapping_panel("Defaults (no config path)")
             return
         if not os.path.exists(p):
+            reset_channel_map()
             write_line(f"[ui] config not found: {p}")
+            update_mapping_panel(f"Defaults (config not found: {p})")
             return
         try:
             with open(p, "rb") as f:
@@ -182,14 +256,38 @@ def main(argv: list[str] | None = None) -> int:
             if isinstance(ch, dict):
                 channel_map = {k: int(v) for k, v in ch.items() if v is not None}
             write_line(f"[ui] config loaded: one_based={one_based_cfg} channels={channel_map}")
+            basis = "1-based config" if one_based_cfg else "0-based config"
+            update_mapping_panel(f"Loaded {p} ({basis})")
         except Exception as e:  # noqa: BLE001
+            reset_channel_map()
             write_line(f"[error] config load: {e}")
+            update_mapping_panel(f"Defaults (config error: {e})")
 
     def ch(name: str, default: int) -> int:
         v = int(channel_map.get(name, default))
         if one_based_cfg:
             v -= 1
         return max(0, v)
+
+    def current_loop_settings() -> tuple[float, str, int]:
+        return float(bpm_input.value()), style_input.currentText(), int(bars_input.value())
+
+    def set_loop_settings(bpm: float, style: str, bars: int) -> None:
+        bpm_input.setValue(float(bpm))
+        idx = style_input.findText(style)
+        if idx >= 0:
+            style_input.setCurrentIndex(idx)
+        bars_input.setValue(int(bars))
+
+    def update_pattern_preview() -> None:
+        bpm, style, bars = current_loop_settings()
+        try:
+            lines = pattern_preview_lines(style, bars=bars)
+        except Exception as e:  # noqa: BLE001
+            preview.setPlainText(f"Preview unavailable: {e}")
+            return
+        lines.insert(0, f"BPM: {bpm:g}")
+        preview.setPlainText("\n".join(lines))
 
     def ensure_client() -> MidiBridgeClient:
         nonlocal client
@@ -272,6 +370,34 @@ def main(argv: list[str] | None = None) -> int:
 
         runner.run(work, cb)
 
+    def on_create_loop() -> None:
+        bpm, style, bars = current_loop_settings()
+        do_drumloop(bpm=bpm, style=style, bars=bars)
+
+    def on_panic() -> None:
+        write_line("[ui] Stop / Panic is reserved for a future transport-stop + clear-pattern action.")
+
+    def trigger_preset(style_name: str) -> None:
+        bpm, style, bars = PRESET_SETTINGS[style_name]
+        set_loop_settings(bpm, style, bars)
+        on_create_loop()
+
+    def preview_plan(
+        *,
+        launch: bool,
+        create: bool,
+        bpm: float | None,
+        style: str | None,
+        bars: int | None,
+        label: str,
+    ) -> None:
+        write_line(f"[preview:{label}] launch={launch} create_drumloop={create} bpm={bpm} style={style} bars={bars}")
+        if not create:
+            return
+        target_bpm, target_style, target_bars = resolved_loop_settings(current_loop_settings(), bpm, style, bars)
+        set_loop_settings(target_bpm, target_style, target_bars)
+        update_pattern_preview()
+
     def on_send() -> None:
         text = inp.text().strip()
         if not text:
@@ -284,7 +410,9 @@ def main(argv: list[str] | None = None) -> int:
             if launch:
                 do_launch()
             if create:
-                do_drumloop(bpm=bpm or 94.0, style=style or "rock", bars=bars or 1)
+                target_bpm, target_style, target_bars = resolved_loop_settings(current_loop_settings(), bpm, style, bars)
+                set_loop_settings(target_bpm, target_style, target_bars)
+                do_drumloop(bpm=target_bpm, style=target_style, bars=target_bars)
 
         if chk_llm.isChecked():
             write_line("[ui] ollama planning...")
@@ -311,17 +439,79 @@ def main(argv: list[str] | None = None) -> int:
         write_line(f"[parsed] {asdict(cmd)}")
         apply_plan(cmd.launch, cmd.create_drumloop, cmd.bpm, cmd.style, cmd.bars, "regex")
 
+    def on_preview_prompt() -> None:
+        text = inp.text().strip()
+        if not text:
+            return
+        write_line(f"[preview-request] {text}")
+        if chk_llm.isChecked():
+            write_line("[ui] ollama preview planning...")
+            btn_preview_prompt.setEnabled(False)
+
+            def handle_finished(res, err):
+                btn_preview_prompt.setEnabled(True)
+                if err:
+                    write_line(f"[error] ollama preview: {err}")
+                    cmd = parse_command(text)
+                    write_line(f"[preview:fallback] {asdict(cmd)}")
+                    preview_plan(
+                        launch=cmd.launch,
+                        create=cmd.create_drumloop,
+                        bpm=cmd.bpm,
+                        style=cmd.style,
+                        bars=cmd.bars,
+                        label="fallback",
+                    )
+                else:
+                    write_line(f"[preview:ollama] {asdict(res)}")
+                    preview_plan(
+                        launch=res.launch,
+                        create=res.create_drumloop,
+                        bpm=res.bpm,
+                        style=res.style,
+                        bars=res.bars,
+                        label="ollama",
+                    )
+
+            def work():
+                return plan_with_ollama(text, model=ollama_model.text().strip(), url=ollama_url.text().strip())
+
+            runner.run(work, handle_finished)
+            return
+
+        cmd = parse_command(text)
+        write_line(f"[preview:parsed] {asdict(cmd)}")
+        preview_plan(
+            launch=cmd.launch,
+            create=cmd.create_drumloop,
+            bpm=cmd.bpm,
+            style=cmd.style,
+            bars=cmd.bars,
+            label="regex",
+        )
+
     btn_connect.clicked.connect(do_connect)
     btn_ping.clicked.connect(do_ping)
     btn_launch.clicked.connect(do_launch)
+    btn_create.clicked.connect(on_create_loop)
+    btn_panic.clicked.connect(on_panic)
+    btn_preview_prompt.clicked.connect(on_preview_prompt)
     btn_send.clicked.connect(on_send)
     inp.returnPressed.connect(on_send)
     btn_cfg.clicked.connect(load_config)
+    bpm_input.valueChanged.connect(lambda _value: update_pattern_preview())
+    bars_input.valueChanged.connect(lambda _value: update_pattern_preview())
+    style_input.currentIndexChanged.connect(lambda _index: update_pattern_preview())
 
-    btn_rock.clicked.connect(lambda: do_drumloop(94.0, "rock", 1))
-    btn_house.clicked.connect(lambda: do_drumloop(128.0, "house", 1))
-    btn_hiphop.clicked.connect(lambda: do_drumloop(92.0, "hiphop", 1))
-    btn_trap.clicked.connect(lambda: do_drumloop(140.0, "trap", 1))
+    btn_rock.clicked.connect(partial(trigger_preset, "rock"))
+    btn_house.clicked.connect(partial(trigger_preset, "house"))
+    btn_hiphop.clicked.connect(partial(trigger_preset, "hiphop"))
+    btn_trap.clicked.connect(partial(trigger_preset, "trap"))
+
+    update_mapping_panel("Defaults (0-based internal mapping)")
+    update_pattern_preview()
+    if os.path.exists(cfg_path.text().strip()):
+        load_config()
 
     win.resize(1200, 700)
     win.show()
