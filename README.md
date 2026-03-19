@@ -80,6 +80,10 @@ This spawns the MCP server via stdio, asks Ollama for tool calls, and prints the
 ## Desktop app (optional)
 
 Minimal Windows desktop UI (chat + preset buttons) that talks to the MIDI bridge directly.
+It also exposes direct controls for BPM, bars, and style, plus a read-only
+template-channel mapping panel loaded from `fl_agent_config.json`, and a live
+pattern preview so you can see the generated step grid before sending it. Use
+`Preview Prompt` to parse a text command into the controls without triggering FL.
 
 Install deps:
 

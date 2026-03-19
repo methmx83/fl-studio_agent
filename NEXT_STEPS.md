@@ -67,4 +67,3 @@ When you’re ready, provide:
 - how you want to run MCP (stdio vs http)
 
 Then we can add a connector so GPT-5.3 can drive the same MCP tools.
-
