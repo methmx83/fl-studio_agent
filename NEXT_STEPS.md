@@ -47,6 +47,8 @@ The app/server converts to 0-based internally.
 
 ## What to build next
 
+For the broader backlog beyond tomorrow's priorities, see `TODO.md`.
+
 ### 1) Make the desktop UI “musician-friendly”
 
 - Show current config mapping in UI (Kick/Clap/Hat/Snare/Bass).
@@ -67,4 +69,3 @@ When you’re ready, provide:
 - how you want to run MCP (stdio vs http)
 
 Then we can add a connector so GPT-5.3 can drive the same MCP tools.
-

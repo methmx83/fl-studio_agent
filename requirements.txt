@@ -1,0 +1,6 @@
+# Canonical dependencies live in pyproject.toml.
+# This file exists as a convenience for users who prefer:
+#   pip install -r requirements.txt
+mcp>=1.0.0
+mido>=1.3.2
+python-rtmidi>=1.5.8

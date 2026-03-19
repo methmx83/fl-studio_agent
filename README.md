@@ -15,6 +15,10 @@ MCP server + FL Studio MIDI Scripting bridge for controlling FL Studio 2025.x on
 - loopMIDI installed, port name: `fl-agent`
 - Python 3.11+ on the machine running the MCP server
 
+The canonical dependency definitions live in `pyproject.toml`. For users who prefer
+plain requirements files, the repo also includes `requirements.txt` and
+`requirements-ui.txt`.
+
 ## Install the FL bridge script
 
 1. Copy the device script into your FL user scripts folder (FL expects a folder + INI entry):
@@ -44,6 +48,12 @@ python -m venv .venv
 .\.venv\Scripts\python -m pip install -U pip
 .\.venv\Scripts\python -m pip install -e .
 .\.venv\Scripts\python -m fl_studio_agent_mcp.server --midi-port "fl-agent"
+```
+
+Alternative install (without editable mode):
+
+```powershell
+.\.venv\Scripts\python -m pip install -r .\requirements.txt
 ```
 
 ### Recommended on your system (separate in/out names)
@@ -80,11 +90,21 @@ This spawns the MCP server via stdio, asks Ollama for tool calls, and prints the
 ## Desktop app (optional)
 
 Minimal Windows desktop UI (chat + preset buttons) that talks to the MIDI bridge directly.
+It also exposes direct controls for BPM, bars, and style, plus a read-only
+template-channel mapping panel loaded from `fl_agent_config.json`, and a live
+pattern preview so you can see the generated step grid before sending it. Use
+`Preview Prompt` to parse a text command into the controls without triggering FL.
 
 Install deps:
 
 ```powershell
 .\.venv\Scripts\python -m pip install -e .[ui]
+```
+
+Alternative install (without editable mode):
+
+```powershell
+.\.venv\Scripts\python -m pip install -r .\requirements-ui.txt
 ```
 
 Run:
@@ -111,6 +131,12 @@ If the system's MIDI stack doesn't expose your virtual port to the Python backen
 ```
 
 This uses `%TEMP%\fl_studio_agent_ipc\in` for requests and `%TEMP%\fl_studio_agent_ipc\out` for responses. The FL bridge processes one request per `OnIdle` tick.
+
+## Roadmap / Backlog
+
+- `NEXT_STEPS.md` tracks the short-term build plan.
+- `TODO.md` collects the broader backlog for stability, features, and repo hygiene.
+- `CHANGELOG.md` tracks the current MVP milestone.
 
 ## Notes
 
