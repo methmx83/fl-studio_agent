@@ -28,10 +28,76 @@ _chunks = {}  # req_id -> { "count": int, "parts": dict[int, bytes], "ts": float
 _IPC_DIR = None
 _IPC_READY_PRINTED = False
 _IPC_WRITE_TESTED = False
+_LAST_IDLE_ERR_MS = {}
+_IDLE_ERR_THROTTLE_MS = 2000
+_LOG_FILE = None
+_LOG_MAX_BYTES = 512 * 1024
+_LOG_BACKUPS = 3
 
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _log_file_path() -> str:
+    global _LOG_FILE
+    if _LOG_FILE is not None:
+        return _LOG_FILE
+    base = _ipc_dir()
+    logs = os.path.join(base, "logs")
+    try:
+        os.makedirs(logs, exist_ok=True)
+    except Exception:
+        pass
+    _LOG_FILE = os.path.join(logs, "bridge.log")
+    return _LOG_FILE
+
+
+def _rotate_log_if_needed(path: str) -> None:
+    try:
+        if not os.path.exists(path):
+            return
+        if os.path.getsize(path) < _LOG_MAX_BYTES:
+            return
+        for idx in range(_LOG_BACKUPS - 1, 0, -1):
+            src = path + "." + str(idx)
+            dst = path + "." + str(idx + 1)
+            if os.path.exists(src):
+                try:
+                    os.replace(src, dst)
+                except Exception:
+                    pass
+        try:
+            os.replace(path, path + ".1")
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _append_log_line(message: str) -> None:
+    try:
+        path = _log_file_path()
+        _rotate_log_if_needed(path)
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(path, "ab") as f:
+            f.write((ts + " " + message + "\n").encode("utf-8", "replace"))
+    except Exception:
+        pass
+
+
+def _log(*parts) -> None:
+    msg = " ".join(str(p) for p in parts)
+    print(msg)
+    _append_log_line(msg)
+
+
+def _log_idle_error(tag: str, err: Exception) -> None:
+    now = _now_ms()
+    last = _LAST_IDLE_ERR_MS.get(tag, 0)
+    if now - last >= _IDLE_ERR_THROTTLE_MS:
+        _log("[fl-agent] idle error (" + tag + "):", err)
+        _LAST_IDLE_ERR_MS[tag] = now
 
 
 def _sysex_strip(envelope: bytes) -> bytes:
@@ -164,6 +230,72 @@ def _process_ipc_once() -> None:
         pass
 
 
+def _try_transport_method(action: str) -> dict:
+    # Keep imports local; these modules only exist in FL's Python runtime.
+    try:
+        import transport  # type: ignore
+    except Exception:
+        transport = None
+
+    method_names = {
+        "play": ("start", "play"),
+        "stop": ("stop",),
+        "record": ("record", "recordToggle", "toggleRecord"),
+    }
+    for name in method_names.get(action, ()):
+        if transport is not None and hasattr(transport, name):
+            fn = getattr(transport, name)
+            try:
+                fn()
+            except TypeError:
+                fn(1)
+            return {"method": "transport." + name}
+    return {}
+
+
+def _try_global_transport(action: str) -> dict:
+    try:
+        import midi  # type: ignore
+        import transport  # type: ignore
+    except Exception:
+        return {}
+
+    if not hasattr(transport, "globalTransport"):
+        return {}
+
+    constant_candidates = {
+        "play": ("FPT_Play",),
+        "stop": ("FPT_Stop",),
+        "record": ("FPT_Record", "FPT_RecordOnOff"),
+        "panic": ("FPT_F12", "FPT_Panic", "FPT_StopAllSound"),
+    }
+    for cname in constant_candidates.get(action, ()):
+        if hasattr(midi, cname):
+            cmd = getattr(midi, cname)
+            try:
+                transport.globalTransport(cmd, 1)
+            except TypeError:
+                transport.globalTransport(cmd, 1, 0)
+            return {"method": "transport.globalTransport", "command": cname}
+    return {}
+
+
+def _transport_action(action: str) -> dict:
+    action = str(action or "").strip().lower()
+    if action not in ("play", "stop", "record", "panic"):
+        raise ValueError("Invalid transport action: " + action)
+
+    info = _try_transport_method(action)
+    if info:
+        return info
+
+    info = _try_global_transport(action)
+    if info:
+        return info
+
+    raise RuntimeError("No supported FL transport API path found for action=" + action)
+
+
 def _parse_and_dispatch(req) -> dict:
     op = req.get("op")
     args = req.get("args") or {}
@@ -207,6 +339,35 @@ def _parse_and_dispatch(req) -> dict:
         bpm = float(args.get("bpm"))
         _set_tempo_bpm(bpm)
         return {"ok": True, "result": {"bpm": float(mixer.getCurrentTempo()) / 1000.0}}
+
+    if op == "transport_control":
+        action = str(args.get("action", "")).strip().lower()
+        detail = _transport_action(action)
+        return {"ok": True, "result": {"action": action, **detail}}
+
+    if op == "panic":
+        stop_result = None
+        panic_result = None
+        errors = []
+        try:
+            stop_result = _transport_action("stop")
+        except Exception as e:
+            errors.append("stop:" + str(e))
+        try:
+            panic_result = _transport_action("panic")
+        except Exception as e:
+            errors.append("panic:" + str(e))
+        if stop_result is None and panic_result is None:
+            raise RuntimeError("panic failed: " + "; ".join(errors))
+        return {
+            "ok": True,
+            "result": {
+                "action": "panic",
+                "stop": stop_result,
+                "panic": panic_result,
+                "warnings": errors,
+            },
+        }
 
     if op == "create_drum_loop":
         bpm = float(args.get("bpm", 94.0))
@@ -271,6 +432,15 @@ def _parse_and_dispatch(req) -> dict:
             pattern_len_beats = 1
         # setStepParameterByIndex appears to be limited to the pattern length.
         max_param_steps = pattern_len_beats * 4
+        bass_mode = str(args.get("bass_mode", "step")).strip().lower()
+        if bass_mode not in ("step", "step_pitch", "piano_roll"):
+            bass_mode = "step"
+        warnings = []
+        if bass_mode == "piano_roll":
+            # FL MIDI device API does not expose a stable direct piano-roll note-write callback.
+            # Fallback to step pitch parameters for now.
+            warnings.append("bass_mode=piano_roll is not directly supported by this API; used step_pitch fallback")
+            bass_mode = "step_pitch"
 
         tracks = args.get("tracks") or []
         # track: { "channel": int, "on_steps": [int], "velocities": { "step": int } }
@@ -305,6 +475,26 @@ def _parse_and_dispatch(req) -> dict:
                     failed = True
                     break
 
+            if bass_mode == "step_pitch":
+                pitches = tr.get("pitches") or {}
+                for k, v in pitches.items():
+                    step = int(k)
+                    if step < 0 or step >= max_param_steps:
+                        continue
+                    pitch = int(v)
+                    if pitch < 0:
+                        pitch = 0
+                    if pitch > 127:
+                        pitch = 127
+                    try:
+                        # pPitch = 0 (see FL MIDI scripting docs step parameters table).
+                        channels.setStepParameterByIndex(ch, pat_num, step, 0, pitch, False)
+                    except Exception:
+                        failed = True
+                        break
+            if failed:
+                warnings.append("some step parameters could not be applied for channel " + str(ch))
+
         return {
             "ok": True,
             "result": {
@@ -315,6 +505,8 @@ def _parse_and_dispatch(req) -> dict:
                 "pat_num": pat_num,
                 "pattern_len_beats": pattern_len_beats,
                 "max_param_steps": max_param_steps,
+                "bass_mode": bass_mode,
+                "warnings": warnings,
                 "tracks": [{"channel": int(t.get("channel"))} for t in tracks],
             },
         }
@@ -323,30 +515,38 @@ def _parse_and_dispatch(req) -> dict:
 
 
 def OnInit():
-    print("[fl-agent] initialized")
+    _log("[fl-agent] initialized")
     try:
         # helps some setups keep output routing active; safe to call if available
         port_num = device.getPortNumber()
-        print("[fl-agent] input port:", port_num)
+        _log("[fl-agent] input port:", port_num)
     except Exception as e:
-        print("[fl-agent] getPortNumber failed:", e)
+        _log("[fl-agent] getPortNumber failed:", e)
 
     # IPC debug (some setups restrict file IO; this makes it visible in Script Output)
     try:
         base = _ipc_dir()
         inbox = os.path.join(base, "in")
         outbox = os.path.join(base, "out")
-        print("[fl-agent] ipc base:", base)
-        print("[fl-agent] ipc inbox exists:", os.path.isdir(inbox))
-        print("[fl-agent] ipc outbox exists:", os.path.isdir(outbox))
+        _log("[fl-agent] ipc base:", base)
+        _log("[fl-agent] ipc inbox exists:", os.path.isdir(inbox))
+        _log("[fl-agent] ipc outbox exists:", os.path.isdir(outbox))
+        _log("[fl-agent] log file:", _log_file_path())
     except Exception as e:
-        print("[fl-agent] ipc init failed:", e)
+        _log("[fl-agent] ipc init failed:", e)
 
 
 def OnIdle():
     global _IPC_READY_PRINTED, _IPC_WRITE_TESTED
-    _cleanup_chunks()
-    _process_ipc_once()
+    try:
+        _cleanup_chunks()
+    except Exception as e:
+        _log_idle_error("cleanup_chunks", e)
+
+    try:
+        _process_ipc_once()
+    except Exception as e:
+        _log_idle_error("process_ipc", e)
 
     # One-time file IO probe so we can see whether FL allows reading/writing.
     if not _IPC_WRITE_TESTED:
@@ -356,9 +556,9 @@ def OnIdle():
             test_path = os.path.join(base, "fl_agent_ipc_test.txt")
             with open(test_path, "wb") as f:
                 f.write(b"ok")
-            print("[fl-agent] ipc write test: OK ->", test_path)
+            _log("[fl-agent] ipc write test: OK ->", test_path)
         except Exception as e:
-            print("[fl-agent] ipc write test: FAILED:", e)
+            _log("[fl-agent] ipc write test: FAILED:", e)
 
 
 def OnSysEx(msg):
@@ -401,10 +601,13 @@ def OnSysEx(msg):
             _send(TYPE_RES, req_id, res)
         except TypeError as e:
             # FL uses TypeError("Operation unsafe at current time") for permission issues
+            _append_log_line("[fl-agent] request TypeError req_id=" + str(req_id) + " err=" + str(e))
             _send(TYPE_ERR, req_id, {"ok": False, "error": str(e)})
         except Exception as e:
+            _append_log_line("[fl-agent] request Exception req_id=" + str(req_id) + " err=" + str(type(e).__name__) + ": " + str(e))
             _send(TYPE_ERR, req_id, {"ok": False, "error": f"{type(e).__name__}: {e}"})
     except Exception as e:
+        _append_log_line("[fl-agent] OnSysEx outer Exception err=" + str(type(e).__name__) + ": " + str(e))
         try:
             _send(TYPE_ERR, 0, {"ok": False, "error": f"{type(e).__name__}: {e}"})
         except Exception:

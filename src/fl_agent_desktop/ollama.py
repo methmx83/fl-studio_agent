@@ -15,6 +15,8 @@ class LlmPlan:
     bpm: float | None = None
     style: str | None = None
     bars: int | None = None
+    key: str | None = None
+    scale: str | None = None
 
 
 def _ollama_chat(model: str, messages: list[dict[str, Any]], *, url: str) -> str:
@@ -61,7 +63,9 @@ def plan_with_ollama(
         '  "create_drumloop": true|false,\n'
         '  "bpm": number|null,\n'
         '  "style": "rock|house|hiphop|trap"|null,\n'
-        '  "bars": integer|null\n'
+        '  "bars": integer|null,\n'
+        '  "key": "C|C#|D|D#|E|F|F#|G|G#|A|A#|B"|null,\n'
+        '  "scale": "major|minor"|null\n'
         "}\n"
         "\n"
         "Rules:\n"
@@ -70,6 +74,8 @@ def plan_with_ollama(
         "- If BPM not specified, use null.\n"
         "- If style not specified, use null.\n"
         "- If bars not specified, use null.\n"
+        "- If key not specified, use null.\n"
+        "- If scale not specified, use null.\n"
     )
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user_text}]
     content = _ollama_chat(model, messages, url=url)
@@ -90,6 +96,17 @@ def plan_with_ollama(
         style = str(style).strip().lower()
         if style not in ("rock", "house", "hiphop", "trap"):
             style = None
+    key = obj.get("key", None)
+    if key is not None:
+        key = str(key).strip().upper()
+        if key not in ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"):
+            key = None
+
+    scale = obj.get("scale", None)
+    if scale is not None:
+        scale = str(scale).strip().lower()
+        if scale not in ("major", "minor"):
+            scale = None
 
     return LlmPlan(
         launch=bool(obj.get("launch", False)),
@@ -97,5 +114,6 @@ def plan_with_ollama(
         bpm=_maybe_float(obj.get("bpm", None)),
         style=style,
         bars=_maybe_int(obj.get("bars", None)),
+        key=key,
+        scale=scale,
     )
-

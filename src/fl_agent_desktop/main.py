@@ -11,7 +11,7 @@ from functools import partial
 from typing import Any, Callable
 
 from fl_studio_agent_mcp.midi_transport import MidiBridgeClient
-from fl_studio_agent_mcp.patterns import on_steps, render
+from fl_studio_agent_mcp.patterns import normalize_key_scale, on_steps, render_with_bassline
 from fl_studio_agent_mcp.server import _default_fl_path
 
 from .pattern_preview import pattern_preview_lines
@@ -141,17 +141,36 @@ def main(argv: list[str] | None = None) -> int:
     bars_input.setValue(1)
     style_input = QtWidgets.QComboBox()
     style_input.addItems(list(STYLE_OPTIONS))
+    key_input = QtWidgets.QLineEdit("C")
+    key_input.setMaximumWidth(60)
+    key_input.setToolTip("Bass key (e.g. C, D#, F#)")
+    scale_input = QtWidgets.QComboBox()
+    scale_input.addItems(["minor", "major"])
+    bass_mode_input = QtWidgets.QComboBox()
+    bass_mode_input.addItems(["step", "step_pitch", "piano_roll"])
+    bass_mode_input.setCurrentText("step_pitch")
     btn_create = QtWidgets.QPushButton("Create Loop")
+    btn_play = QtWidgets.QPushButton("Play")
+    btn_stop = QtWidgets.QPushButton("Stop")
+    btn_record = QtWidgets.QPushButton("Record")
     btn_panic = QtWidgets.QPushButton("Stop / Panic")
-    btn_panic.setEnabled(False)
-    btn_panic.setToolTip("Reserved for a future transport-stop + clear-pattern action.")
+    btn_panic.setToolTip("Best effort: transport stop + panic.")
     performance.addWidget(QtWidgets.QLabel("BPM:"))
     performance.addWidget(bpm_input)
     performance.addWidget(QtWidgets.QLabel("Bars:"))
     performance.addWidget(bars_input)
     performance.addWidget(QtWidgets.QLabel("Style:"))
     performance.addWidget(style_input, 1)
+    performance.addWidget(QtWidgets.QLabel("Key:"))
+    performance.addWidget(key_input)
+    performance.addWidget(QtWidgets.QLabel("Scale:"))
+    performance.addWidget(scale_input)
+    performance.addWidget(QtWidgets.QLabel("Bass Mode:"))
+    performance.addWidget(bass_mode_input)
     performance.addWidget(btn_create)
+    performance.addWidget(btn_play)
+    performance.addWidget(btn_stop)
+    performance.addWidget(btn_record)
     performance.addWidget(btn_panic)
 
     preview_box = QtWidgets.QGroupBox("Pattern Preview")
@@ -221,6 +240,21 @@ def main(argv: list[str] | None = None) -> int:
     def write_line(s: str) -> None:
         log.appendPlainText(s)
 
+    def is_unknown_op_payload(payload: Any, op_name: str) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        err = payload.get("error")
+        if not isinstance(err, str):
+            return False
+        return ("Unknown op: " + op_name) in err
+
+    def log_bridge_update_hint(op_name: str) -> None:
+        write_line(
+            "[hint] FL bridge is outdated (missing "
+            + op_name
+            + "). Run .\\scripts\\install_fl_bridge.ps1 and restart FL Studio."
+        )
+
     channel_map: dict[str, int] = dict(DEFAULT_CHANNEL_MAP)
     one_based_cfg = False
 
@@ -272,6 +306,17 @@ def main(argv: list[str] | None = None) -> int:
     def current_loop_settings() -> tuple[float, str, int]:
         return float(bpm_input.value()), style_input.currentText(), int(bars_input.value())
 
+    def current_tonal_settings() -> tuple[str, str]:
+        key = key_input.text().strip() or "C"
+        scale = scale_input.currentText().strip() or "minor"
+        return normalize_key_scale(key, scale)
+
+    def current_bass_mode() -> str:
+        mode = bass_mode_input.currentText().strip().lower()
+        if mode not in ("step", "step_pitch", "piano_roll"):
+            mode = "step_pitch"
+        return mode
+
     def set_loop_settings(bpm: float, style: str, bars: int) -> None:
         bpm_input.setValue(float(bpm))
         idx = style_input.findText(style)
@@ -279,10 +324,18 @@ def main(argv: list[str] | None = None) -> int:
             style_input.setCurrentIndex(idx)
         bars_input.setValue(int(bars))
 
+    def set_tonal_settings(key: str | None, scale: str | None) -> None:
+        norm_key, norm_scale = normalize_key_scale(key, scale)
+        key_input.setText(norm_key)
+        scale_idx = scale_input.findText(norm_scale)
+        if scale_idx >= 0:
+            scale_input.setCurrentIndex(scale_idx)
+
     def update_pattern_preview() -> None:
         bpm, style, bars = current_loop_settings()
+        key, scale = current_tonal_settings()
         try:
-            lines = pattern_preview_lines(style, bars=bars)
+            lines = pattern_preview_lines(style, bars=bars, key=key, scale=scale)
         except Exception as e:  # noqa: BLE001
             preview.setPlainText(f"Preview unavailable: {e}")
             return
@@ -325,7 +378,20 @@ def main(argv: list[str] | None = None) -> int:
         subprocess.Popen([exe], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         write_line("[ui] launched FL Studio")
 
-    def do_drumloop(bpm: float, style: str, bars: int = 1) -> None:
+    def do_drumloop(
+        bpm: float,
+        style: str,
+        bars: int = 1,
+        *,
+        key: str | None = None,
+        scale: str | None = None,
+        bass_mode: str | None = None,
+    ) -> None:
+        norm_key, norm_scale = normalize_key_scale(key, scale)
+        mode = (bass_mode or current_bass_mode()).strip().lower()
+        if mode not in ("step", "step_pitch", "piano_roll"):
+            mode = "step_pitch"
+
         def work():
             c = ensure_client()
             # If FL was just launched, the controller script can take a moment to start responding.
@@ -339,7 +405,7 @@ def main(argv: list[str] | None = None) -> int:
                     time.sleep(0.5)
 
             total_steps = 16 * bars
-            pat = render(style, total_steps=total_steps, steps_per_bar=16)
+            pat = render_with_bassline(style, total_steps=total_steps, steps_per_bar=16, key=norm_key, scale=norm_scale)
             tracks = [
                 {"channel": ch("kick", 0), "on_steps": on_steps(pat.kick)},
                 {"channel": ch("snare", 1), "on_steps": on_steps(pat.snare)},
@@ -348,34 +414,112 @@ def main(argv: list[str] | None = None) -> int:
             if pat.clap is not None and "clap" in channel_map:
                 tracks.append({"channel": ch("clap", 3), "on_steps": on_steps(pat.clap)})
             if pat.bass is not None and "bass" in channel_map:
-                tracks.append({"channel": ch("bass", 4), "on_steps": on_steps(pat.bass)})
+                bass_track: dict[str, Any] = {"channel": ch("bass", 4), "on_steps": on_steps(pat.bass)}
+                if mode in ("step_pitch", "piano_roll") and pat.bass_notes:
+                    bass_track["pitches"] = {str(ev.step): int(ev.midi) for ev in pat.bass_notes}
+                tracks.append(bass_track)
 
-            return c.rpc(
+            rpc_payload = c.rpc(
                 "set_stepseq",
                 {
                     "bpm": bpm,
                     "steps_per_bar": 16,
                     "bars": bars,
                     "total_steps": total_steps,
+                    "bass_mode": mode,
                     "tracks": tracks,
                 },
                 timeout_s=6.0,
             ).payload
+            bassline = [{"step": ev.step, "degree": ev.degree, "note": ev.note} for ev in (pat.bass_notes or [])]
+            return {"rpc": rpc_payload, "bassline": {"key": norm_key, "scale": norm_scale, "mode": mode, "events": bassline}}
 
         def cb(res, err):
             if err:
                 write_line(f"[error] drumloop: {err}")
             else:
-                write_line(f"[ok] drumloop ({style}, {bpm} bpm, {bars} bar): {res}")
+                rpc_payload = res.get("rpc", {}) if isinstance(res, dict) else {}
+                if isinstance(rpc_payload, dict) and not bool(rpc_payload.get("ok", False)):
+                    write_line(f"[error] drumloop ({style}, {bpm} bpm, {bars} bar): {rpc_payload}")
+                    return
+                bassline = (res.get("bassline", {}) if isinstance(res, dict) else {})
+                ev = bassline.get("events", []) if isinstance(bassline, dict) else []
+                mode_out = bassline.get("mode", mode) if isinstance(bassline, dict) else mode
+                preview_notes = ", ".join(f"{x['step']}:{x['note']}({x['degree']})" for x in ev[:6]) if ev else "-"
+                write_line(
+                    f"[ok] drumloop ({style}, {bpm} bpm, {bars} bar, {norm_key} {norm_scale}, {mode_out}): {rpc_payload} | bass: {preview_notes}"
+                )
 
         runner.run(work, cb)
 
     def on_create_loop() -> None:
         bpm, style, bars = current_loop_settings()
-        do_drumloop(bpm=bpm, style=style, bars=bars)
+        key, scale = current_tonal_settings()
+        do_drumloop(bpm=bpm, style=style, bars=bars, key=key, scale=scale, bass_mode=current_bass_mode())
+
+    def do_transport(action: str, *, timeout_s: float = 1.5) -> None:
+        action = action.strip().lower()
+
+        def work():
+            c = ensure_client()
+            return c.rpc("transport_control", {"action": action}, timeout_s=timeout_s).payload
+
+        def cb(res, err):
+            if err:
+                write_line(f"[error] transport {action}: {err}")
+                return
+            if isinstance(res, dict) and not bool(res.get("ok", False)):
+                write_line(f"[error] transport {action}: {res}")
+                if is_unknown_op_payload(res, "transport_control"):
+                    log_bridge_update_hint("transport_control")
+                return
+            write_line(f"[ok] transport {action}: {res}")
+
+        runner.run(work, cb)
 
     def on_panic() -> None:
-        write_line("[ui] Stop / Panic is reserved for a future transport-stop + clear-pattern action.")
+        def work():
+            c = ensure_client()
+            out: dict[str, Any] = {"ok": False, "result": {}}
+            errors: list[str] = []
+            try:
+                out["result"]["stop"] = c.rpc("transport_control", {"action": "stop"}, timeout_s=0.8).payload
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"stop={e}")
+            try:
+                out["result"]["panic"] = c.rpc("panic", timeout_s=0.8).payload
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"panic={e}")
+            stop_payload = out["result"].get("stop")
+            panic_payload = out["result"].get("panic")
+            stop_ok = isinstance(stop_payload, dict) and bool(stop_payload.get("ok", False))
+            panic_ok = isinstance(panic_payload, dict) and bool(panic_payload.get("ok", False))
+            out["ok"] = bool(stop_ok or panic_ok)
+            out["errors"] = errors
+            return out
+
+        def cb(res, err):
+            if err:
+                write_line(f"[error] panic: {err}")
+                return
+            if not isinstance(res, dict) or not res.get("ok", False):
+                write_line(f"[error] panic failed: {res}")
+                return
+            stop_payload = res.get("result", {}).get("stop")
+            panic_payload = res.get("result", {}).get("panic")
+            stop_ok = isinstance(stop_payload, dict) and bool(stop_payload.get("ok", False))
+            panic_ok = isinstance(panic_payload, dict) and bool(panic_payload.get("ok", False))
+            if not stop_ok and not panic_ok:
+                write_line(f"[error] panic failed: {res}")
+                if is_unknown_op_payload(stop_payload, "transport_control") or is_unknown_op_payload(panic_payload, "panic"):
+                    log_bridge_update_hint("transport_control/panic")
+                return
+            if res.get("errors"):
+                write_line(f"[warn] panic partial: {res}")
+            else:
+                write_line(f"[ok] panic: {res}")
+
+        runner.run(work, cb)
 
     def trigger_preset(style_name: str) -> None:
         bpm, style, bars = PRESET_SETTINGS[style_name]
@@ -389,13 +533,19 @@ def main(argv: list[str] | None = None) -> int:
         bpm: float | None,
         style: str | None,
         bars: int | None,
+        key: str | None,
+        scale: str | None,
         label: str,
     ) -> None:
-        write_line(f"[preview:{label}] launch={launch} create_drumloop={create} bpm={bpm} style={style} bars={bars}")
+        write_line(
+            f"[preview:{label}] launch={launch} create_drumloop={create} bpm={bpm} style={style} bars={bars} key={key} scale={scale}"
+        )
         if not create:
             return
         target_bpm, target_style, target_bars = resolved_loop_settings(current_loop_settings(), bpm, style, bars)
+        target_key, target_scale = normalize_key_scale(key, scale)
         set_loop_settings(target_bpm, target_style, target_bars)
+        set_tonal_settings(target_key, target_scale)
         update_pattern_preview()
 
     def on_send() -> None:
@@ -405,14 +555,34 @@ def main(argv: list[str] | None = None) -> int:
         inp.clear()
         write_line(f"> {text}")
 
-        def apply_plan(launch: bool, create: bool, bpm: float | None, style: str | None, bars: int | None, label: str) -> None:
-            write_line(f"[plan:{label}] launch={launch} create_drumloop={create} bpm={bpm} style={style} bars={bars}")
+        def apply_plan(
+            launch: bool,
+            create: bool,
+            bpm: float | None,
+            style: str | None,
+            bars: int | None,
+            key: str | None,
+            scale: str | None,
+            label: str,
+        ) -> None:
+            write_line(
+                f"[plan:{label}] launch={launch} create_drumloop={create} bpm={bpm} style={style} bars={bars} key={key} scale={scale}"
+            )
             if launch:
                 do_launch()
             if create:
                 target_bpm, target_style, target_bars = resolved_loop_settings(current_loop_settings(), bpm, style, bars)
+                target_key, target_scale = normalize_key_scale(key, scale)
                 set_loop_settings(target_bpm, target_style, target_bars)
-                do_drumloop(bpm=target_bpm, style=target_style, bars=target_bars)
+                set_tonal_settings(target_key, target_scale)
+                do_drumloop(
+                    bpm=target_bpm,
+                    style=target_style,
+                    bars=target_bars,
+                    key=target_key,
+                    scale=target_scale,
+                    bass_mode=current_bass_mode(),
+                )
 
         if chk_llm.isChecked():
             write_line("[ui] ollama planning...")
@@ -424,10 +594,10 @@ def main(argv: list[str] | None = None) -> int:
                     write_line(f"[error] ollama: {err}")
                     cmd = parse_command(text)
                     write_line(f"[parsed:fallback] {asdict(cmd)}")
-                    apply_plan(cmd.launch, cmd.create_drumloop, cmd.bpm, cmd.style, cmd.bars, "fallback")
+                    apply_plan(cmd.launch, cmd.create_drumloop, cmd.bpm, cmd.style, cmd.bars, cmd.key, cmd.scale, "fallback")
                 else:
                     write_line(f"[ollama] {asdict(res)}")
-                    apply_plan(res.launch, res.create_drumloop, res.bpm, res.style, res.bars, "ollama")
+                    apply_plan(res.launch, res.create_drumloop, res.bpm, res.style, res.bars, res.key, res.scale, "ollama")
 
             def work():
                 return plan_with_ollama(text, model=ollama_model.text().strip(), url=ollama_url.text().strip())
@@ -437,7 +607,7 @@ def main(argv: list[str] | None = None) -> int:
 
         cmd = parse_command(text)
         write_line(f"[parsed] {asdict(cmd)}")
-        apply_plan(cmd.launch, cmd.create_drumloop, cmd.bpm, cmd.style, cmd.bars, "regex")
+        apply_plan(cmd.launch, cmd.create_drumloop, cmd.bpm, cmd.style, cmd.bars, cmd.key, cmd.scale, "regex")
 
     def on_preview_prompt() -> None:
         text = inp.text().strip()
@@ -460,6 +630,8 @@ def main(argv: list[str] | None = None) -> int:
                         bpm=cmd.bpm,
                         style=cmd.style,
                         bars=cmd.bars,
+                        key=cmd.key,
+                        scale=cmd.scale,
                         label="fallback",
                     )
                 else:
@@ -470,6 +642,8 @@ def main(argv: list[str] | None = None) -> int:
                         bpm=res.bpm,
                         style=res.style,
                         bars=res.bars,
+                        key=res.key,
+                        scale=res.scale,
                         label="ollama",
                     )
 
@@ -487,6 +661,8 @@ def main(argv: list[str] | None = None) -> int:
             bpm=cmd.bpm,
             style=cmd.style,
             bars=cmd.bars,
+            key=cmd.key,
+            scale=cmd.scale,
             label="regex",
         )
 
@@ -494,6 +670,9 @@ def main(argv: list[str] | None = None) -> int:
     btn_ping.clicked.connect(do_ping)
     btn_launch.clicked.connect(do_launch)
     btn_create.clicked.connect(on_create_loop)
+    btn_play.clicked.connect(lambda: do_transport("play"))
+    btn_stop.clicked.connect(lambda: do_transport("stop"))
+    btn_record.clicked.connect(lambda: do_transport("record"))
     btn_panic.clicked.connect(on_panic)
     btn_preview_prompt.clicked.connect(on_preview_prompt)
     btn_send.clicked.connect(on_send)
@@ -502,6 +681,9 @@ def main(argv: list[str] | None = None) -> int:
     bpm_input.valueChanged.connect(lambda _value: update_pattern_preview())
     bars_input.valueChanged.connect(lambda _value: update_pattern_preview())
     style_input.currentIndexChanged.connect(lambda _index: update_pattern_preview())
+    key_input.editingFinished.connect(update_pattern_preview)
+    scale_input.currentIndexChanged.connect(lambda _index: update_pattern_preview())
+    bass_mode_input.currentIndexChanged.connect(lambda _index: update_pattern_preview())
 
     btn_rock.clicked.connect(partial(trigger_preset, "rock"))
     btn_house.clicked.connect(partial(trigger_preset, "house"))

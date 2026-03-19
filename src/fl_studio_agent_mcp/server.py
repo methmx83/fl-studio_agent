@@ -2,20 +2,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import subprocess
 import sys
+import tempfile
+from logging.handlers import RotatingFileHandler
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
 from .file_transport import FileBridgeClient
 from .midi_transport import MidiBridgeClient
-from .patterns import on_steps, render
+from .patterns import normalize_key_scale, on_steps, render_with_bassline
+
+LOG = logging.getLogger("fl_studio_agent_mcp.server")
 
 
 def _default_fl_path() -> str:
     return r"C:\Program Files\Image-Line\FL Studio 2025\FL64.exe"
+
 
 def _load_config(path: str | None) -> dict:
     if not path:
@@ -37,6 +43,96 @@ def _pick_port(base: str, names: list[str]) -> str | None:
         if base_l in n.lower():
             return n
     return None
+
+
+def _setup_logging(log_file: str | None, level: str, max_bytes: int, backups: int) -> None:
+    log_level = getattr(logging, level.upper(), logging.INFO)
+    LOG.setLevel(log_level)
+    LOG.handlers.clear()
+    LOG.propagate = False
+
+    # Keep console output light while enabling persistent diagnostics.
+    stream = logging.StreamHandler(sys.stderr)
+    stream.setLevel(log_level)
+    stream.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    LOG.addHandler(stream)
+
+    path = log_file
+    if not path:
+        base = os.path.join(tempfile.gettempdir(), "fl_studio_agent_logs")
+        os.makedirs(base, exist_ok=True)
+        path = os.path.join(base, "server.log")
+    else:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+
+    file_handler = RotatingFileHandler(
+        path,
+        maxBytes=max(1024, int(max_bytes)),
+        backupCount=max(1, int(backups)),
+        encoding="utf-8",
+    )
+    file_handler.setLevel(log_level)
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    LOG.addHandler(file_handler)
+    LOG.info("server logging enabled file=%s level=%s", path, level.upper())
+
+
+def _error_result(
+    code: str,
+    message: str,
+    *,
+    operation: str | None = None,
+    timeout_s: float | None = None,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    detail: dict[str, Any] = {"code": code, "message": message}
+    if operation is not None:
+        detail["operation"] = operation
+    if timeout_s is not None:
+        detail["timeout_s"] = timeout_s
+    if details:
+        detail.update(details)
+    # Keep a plain string at error for existing clients while adding structured metadata.
+    return {"ok": False, "error": message, "error_detail": detail}
+
+
+def _rpc_call(client: Any, op: str, args: dict[str, Any] | None = None, *, timeout_s: float) -> dict[str, Any]:
+    try:
+        res = client.rpc(op, args, timeout_s=timeout_s)
+    except TimeoutError as e:
+        LOG.warning("rpc timeout op=%s timeout_s=%.3f error=%s", op, timeout_s, e)
+        return _error_result("RPC_TIMEOUT", str(e), operation=op, timeout_s=timeout_s)
+    except Exception as e:  # noqa: BLE001
+        LOG.exception("rpc transport failure op=%s", op)
+        return _error_result("RPC_TRANSPORT", f"{type(e).__name__}: {e}", operation=op)
+
+    payload = res.payload if isinstance(res.payload, dict) else {}
+    if bool(payload.get("ok", False)):
+        return payload
+
+    remote_error = payload.get("error")
+    if isinstance(remote_error, dict):
+        msg = str(remote_error.get("message") or "FL bridge returned an error.")
+        LOG.warning("rpc remote error op=%s message=%s", op, msg)
+        return _error_result(
+            "RPC_REMOTE",
+            msg,
+            operation=op,
+            details={"remote_error": remote_error, "raw_type": res.raw_type},
+        )
+    if isinstance(remote_error, str) and remote_error.strip():
+        LOG.warning("rpc remote error op=%s message=%s", op, remote_error)
+        return _error_result("RPC_REMOTE", remote_error, operation=op, details={"raw_type": res.raw_type})
+
+    LOG.warning("rpc invalid response op=%s payload=%r raw_type=%s", op, payload, getattr(res, "raw_type", None))
+    return _error_result(
+        "RPC_INVALID_RESPONSE",
+        "FL bridge returned an invalid error payload.",
+        operation=op,
+        details={"payload": payload, "raw_type": res.raw_type},
+    )
 
 
 def _create_client(
@@ -82,6 +178,8 @@ def create_app(
     backend: str = "auto",
     ipc_dir: str | None = None,
     config_path: str | None = None,
+    rpc_timeout: float = 2.0,
+    rpc_timeout_loop: float = 4.0,
 ) -> FastMCP:
     mcp = FastMCP("fl-studio-agent")
     client = _create_client(backend, midi_port=midi_port, midi_in=midi_in, midi_out=midi_out, ipc_dir=ipc_dir)
@@ -104,8 +202,7 @@ def create_app(
     @mcp.tool()
     def fl_ping() -> dict[str, Any]:
         """Round-trip test to the FL Studio bridge."""
-        res = client.rpc("ping", timeout_s=2.0)
-        return res.payload
+        return _rpc_call(client, "ping", timeout_s=rpc_timeout)
 
     @mcp.tool()
     def fl_launch() -> dict[str, Any]:
@@ -118,14 +215,45 @@ def create_app(
     @mcp.tool()
     def fl_get_tempo() -> dict[str, Any]:
         """Get current FL Studio tempo."""
-        res = client.rpc("get_tempo", timeout_s=2.0)
-        return res.payload
+        return _rpc_call(client, "get_tempo", timeout_s=rpc_timeout)
 
     @mcp.tool()
     def fl_set_tempo(bpm: float) -> dict[str, Any]:
         """Set FL Studio tempo in BPM."""
-        res = client.rpc("set_tempo", {"bpm": bpm}, timeout_s=2.0)
-        return res.payload
+        return _rpc_call(client, "set_tempo", {"bpm": bpm}, timeout_s=rpc_timeout)
+
+    @mcp.tool()
+    def fl_transport(action: str) -> dict[str, Any]:
+        """Control FL transport. Supported actions: play, stop, record."""
+        action_norm = str(action).strip().lower()
+        if action_norm not in ("play", "stop", "record"):
+            return _error_result(
+                "INVALID_ARGUMENT",
+                "action must be one of: play, stop, record",
+                operation="transport_control",
+                details={"action": action},
+            )
+        return _rpc_call(client, "transport_control", {"action": action_norm}, timeout_s=rpc_timeout)
+
+    @mcp.tool()
+    def fl_play() -> dict[str, Any]:
+        """Start playback."""
+        return _rpc_call(client, "transport_control", {"action": "play"}, timeout_s=rpc_timeout)
+
+    @mcp.tool()
+    def fl_stop() -> dict[str, Any]:
+        """Stop playback."""
+        return _rpc_call(client, "transport_control", {"action": "stop"}, timeout_s=rpc_timeout)
+
+    @mcp.tool()
+    def fl_record() -> dict[str, Any]:
+        """Toggle/arm recording (depends on FL runtime support)."""
+        return _rpc_call(client, "transport_control", {"action": "record"}, timeout_s=rpc_timeout)
+
+    @mcp.tool()
+    def fl_panic() -> dict[str, Any]:
+        """Best effort stop + all-notes-off style panic."""
+        return _rpc_call(client, "panic", timeout_s=max(0.75, rpc_timeout))
 
     @mcp.tool()
     def fl_create_drum_loop(
@@ -136,7 +264,8 @@ def create_app(
         steps: int = 16,
     ) -> dict[str, Any]:
         """Program a simple 4/4 drum loop via step sequencer grid bits."""
-        res = client.rpc(
+        return _rpc_call(
+            client,
             "create_drum_loop",
             {
                 "bpm": bpm,
@@ -145,9 +274,8 @@ def create_app(
                 "hat_channel": hat_channel,
                 "steps": steps,
             },
-            timeout_s=3.0,
+            timeout_s=max(rpc_timeout, 3.0),
         )
-        return res.payload
 
     @mcp.tool()
     def fl_create_4_4_drumloop(
@@ -155,6 +283,9 @@ def create_app(
         style: str = "rock",
         bars: int = 1,
         steps_per_bar: int = 16,
+        key: str = "C",
+        scale: str = "minor",
+        bass_mode: str = "step_pitch",
         kick_channel: int | None = None,
         snare_channel: int | None = None,
         hat_channel: int | None = None,
@@ -195,7 +326,16 @@ def create_app(
                 bass = None
 
         total_steps = steps_per_bar * bars
-        pat = render(style, total_steps=total_steps, steps_per_bar=steps_per_bar)
+        norm_key, norm_scale = normalize_key_scale(key, scale)
+        bass_mode_norm = str(bass_mode or "step_pitch").strip().lower()
+        if bass_mode_norm not in ("step", "step_pitch", "piano_roll"):
+            return _error_result(
+                "INVALID_ARGUMENT",
+                "bass_mode must be one of: step, step_pitch, piano_roll",
+                operation="fl_create_4_4_drumloop",
+                details={"bass_mode": bass_mode},
+            )
+        pat = render_with_bassline(style, total_steps=total_steps, steps_per_bar=steps_per_bar, key=norm_key, scale=norm_scale)
 
         def vel_map(on: list[int], *, base: int, accent_every: int | None = None) -> dict[str, int]:
             # Keep deterministic (no RNG) but provide small accents.
@@ -215,7 +355,10 @@ def create_app(
         if clap is not None and pat.clap:
             tracks.append({"channel": int(clap), "on_steps": on_steps(pat.clap)})
         if include_bass and bass is not None and pat.bass:
-            tracks.append({"channel": int(bass), "on_steps": on_steps(pat.bass)})
+            bass_track: dict[str, Any] = {"channel": int(bass), "on_steps": on_steps(pat.bass)}
+            if bass_mode_norm in ("step_pitch", "piano_roll") and pat.bass_notes:
+                bass_track["pitches"] = {str(ev.step): int(ev.midi) for ev in pat.bass_notes}
+            tracks.append(bass_track)
 
         if use_velocities:
             # Velocity support can be limited depending on the project's pattern length; keep it opt-in.
@@ -225,12 +368,27 @@ def create_app(
             if clap is not None and pat.clap:
                 tracks[-1]["velocities"] = vel_map(tracks[-1]["on_steps"], base=108, accent_every=8)
 
-        res = client.rpc(
+        out = _rpc_call(
+            client,
             "set_stepseq",
-            {"bpm": bpm, "steps_per_bar": steps_per_bar, "bars": bars, "total_steps": total_steps, "tracks": tracks},
-            timeout_s=4.0,
+            {
+                "bpm": bpm,
+                "steps_per_bar": steps_per_bar,
+                "bars": bars,
+                "total_steps": total_steps,
+                "bass_mode": bass_mode_norm,
+                "tracks": tracks,
+            },
+            timeout_s=max(rpc_timeout_loop, rpc_timeout),
         )
-        return res.payload
+        if bool(out.get("ok", False)):
+            bassline = []
+            if pat.bass_notes:
+                bassline = [{"step": ev.step, "degree": ev.degree, "note": ev.note, "midi": ev.midi} for ev in pat.bass_notes]
+            result = out.get("result")
+            if isinstance(result, dict):
+                result["bassline"] = {"key": norm_key, "scale": norm_scale, "mode": bass_mode_norm, "events": bassline}
+        return out
 
     return mcp
 
@@ -253,7 +411,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ipc-dir", default=None, help="IPC base dir for file backend (default: TEMP\\fl_studio_agent_ipc)")
     parser.add_argument("--fl-path", default=_default_fl_path(), help="Path to FL64.exe")
     parser.add_argument("--config", default=None, help="Optional JSON config (see fl_agent_config.example.json)")
+    parser.add_argument("--rpc-timeout", type=float, default=2.0, help="Default RPC timeout in seconds.")
+    parser.add_argument("--rpc-timeout-loop", type=float, default=4.0, help="Loop/programming RPC timeout in seconds.")
+    parser.add_argument("--log-file", default=None, help="Optional server log file path.")
+    parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"], help="Server log level.")
+    parser.add_argument("--log-max-bytes", type=int, default=1_048_576, help="Max bytes per log file before rotation.")
+    parser.add_argument("--log-backups", type=int, default=3, help="Number of rotated server log files to keep.")
     args = parser.parse_args(argv)
+
+    _setup_logging(args.log_file, args.log_level, args.log_max_bytes, args.log_backups)
+    LOG.info(
+        "starting server backend=%s midi_in=%r midi_out=%r midi_port=%r",
+        args.backend,
+        args.midi_in,
+        args.midi_out,
+        args.midi_port,
+    )
 
     # Allow config to provide default MIDI port names.
     cfg = _load_config(args.config)
@@ -272,6 +445,8 @@ def main(argv: list[str] | None = None) -> int:
         backend=args.backend,
         ipc_dir=args.ipc_dir,
         config_path=args.config,
+        rpc_timeout=max(0.1, float(args.rpc_timeout)),
+        rpc_timeout_loop=max(0.1, float(args.rpc_timeout_loop)),
     )
     app.run()
     return 0

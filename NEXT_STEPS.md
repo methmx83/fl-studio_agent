@@ -1,71 +1,87 @@
-# Next Steps (Tomorrow)
+# Next Steps (v0.2 focus)
 
-This repo already works end-to-end on the test system:
+This repo already works end-to-end on the current test setup:
 
-- FL Studio bridge (MIDI controller script) is loaded
-- SysEx RPC works via loopMIDI
-- Desktop app can parse text via Ollama and program drums (and simple bass rhythm) into the step sequencer
+- FL Studio bridge script is loaded and reachable via loopMIDI.
+- SysEx RPC works through MCP server <-> FL bridge round-trips.
+- Desktop app supports prompt preview, BPM/bars/style controls, pattern preview, and optional Ollama parsing.
+- Template channel mapping via `fl_agent_config.json` is already integrated.
 
 ## Quick start (test system)
 
-1. Start loopMIDI and ensure the port exists:
-   - `fl-agent`
-
-2. If Python can't see the MIDI ports, restart the Windows MIDI service (Admin PowerShell):
+1. Start loopMIDI and ensure these ports are available:
+   - `fl-agent` (single-port setup), or
+   - `fl-agent 0` + `fl-agent 1` (recommended split in/out setup)
+2. If Python cannot see virtual ports, restart Windows MIDI service (Admin PowerShell):
    - `Stop-Service midisrv -Force`
    - `Start-Service midisrv`
-
 3. Start FL Studio and assign the controller script:
    - `Options -> MIDI settings`
-   - Input device: `fl-agent` enabled
+   - Enable input device for `fl-agent*`
    - Controller type: `FL Studio Agent (MCP Bridge)`
-
-4. Run the desktop app:
+   - Enable output for the same loopMIDI pair/port
+4. Run desktop app:
    - `D:\Coding\Projekte\fl-studio_agent\scripts\run_desktop_app.ps1`
-
-5. Enable Ollama mode (optional):
-   - Check `Use Ollama`
+5. Optional Ollama mode:
+   - `Use Ollama` enabled
    - Model: `gemma3:4b`
    - URL: `http://localhost:11434/api/chat`
 
 Example prompt:
-- `Öffne FL Studio und erstelle einen 4/4 Drumloop in 94 BPM (hiphop)`
+- `Oeffne FL Studio und erstelle einen 4/4 Drumloop in 94 BPM (hiphop)`
 
-## Template channel mapping
+## Local mapping reference
 
 Local config (not committed):
 - `fl_agent_config.json`
 
-Current mapping (1-based as musicians count channels):
+Typical 1-based template mapping:
 - Kick = 1
 - Clap = 2
 - HiHat = 3
 - Snare = 4
 - Bass = 5
 
-The app/server converts to 0-based internally.
+Note: app/server converts to 0-based indices internally.
 
-## What to build next
+## Priority plan (next implementation)
 
-For the broader backlog beyond tomorrow's priorities, see `TODO.md`.
+For broader backlog items, keep `TODO.md` as source of truth. This list is the practical build order.
 
-### 1) Make the desktop UI “musician-friendly”
+### 1) Stabilize runtime and errors
 
-- Show current config mapping in UI (Kick/Clap/Hat/Snare/Bass).
-- Add UI controls for BPM, bars, style dropdown.
-- Add “Stop / Panic” (future: transport stop + clear pattern).
+- Status: done on 2026-03-19.
+- Done: configurable RPC timeouts via CLI (`--rpc-timeout`, `--rpc-timeout-loop`) and structured server error payloads (`error` + `error_detail`).
+- Done: FL bridge `OnIdle` now guards chunk cleanup and IPC processing with throttled error logging.
+- Done: MIDI client now attempts reconnect on stream interruption and send failures.
+- Done: optional rotating file logs added for MCP server and FL bridge troubleshooting.
 
-### 2) Make the “bass” musical (not only rhythm)
+### 2) Transport and safety controls
 
-Right now bass is only step-triggered. Next upgrade:
-- Ask for `key` and `scale` (or detect from prompt).
-- Add a simple bassline generator (root/5th patterns).
-- If feasible with FL API: write actual notes to Piano Roll / channel (otherwise keep step-seq rhythm).
+- Status: done on 2026-03-19 (pending runtime verification in FL Studio).
+- Done: MCP tools added for transport (`fl_transport`, `fl_play`, `fl_stop`, `fl_record`) plus `fl_panic`.
+- Done: desktop UI now has `Play`, `Stop`, `Record`, and wired `Stop / Panic`.
+- Done: panic path is best-effort and resilient to delayed/missing RPC responses (short timeouts + partial-success handling).
 
-### 3) OpenClaw / GPT-5.3 integration (main workstation)
+### 3) Musical bass upgrade
 
-When you’re ready, provide:
-- the OpenClaw repo/docs link
-- how you want to run MCP (stdio vs http)
+- Status: done on 2026-03-19.
+- Done: parse/Ollama plan now support `key` + `scale` with fallback defaults.
+- Done: deterministic bassline planner added (root/5th/octave rotation per style) with note-event preview.
+- Done: optional bass mode (`step`, `step_pitch`, `piano_roll`) added.
+- Done: `piano_roll` is evaluated and currently falls back to `step_pitch` in bridge due API limitations; fallback is returned as warning.
 
-Then we can add a connector so GPT-5.3 can drive the same MCP tools.
+### 4) Pattern read-back and multi-pattern workflow
+
+- Add bridge/server method to read current step pattern state.
+- Surface read-back in desktop UI for before/after verification.
+- Add `pattern_index` support to loop tools for multi-pattern projects.
+
+### 5) OpenClaw / GPT-5.x connector
+
+When integrating on the main workstation, define:
+- OpenClaw repo/docs reference,
+- MCP transport mode (`stdio` vs `http`),
+- auth/process model for local tool execution.
+
+Then add adapter so GPT-5.x can use the same MCP tool surface.
