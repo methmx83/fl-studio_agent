@@ -73,6 +73,13 @@ Create `fl_agent_config.json` by copying `fl_agent_config.example.json`, then ru
 This lets the high-level tool `fl_create_4_4_drumloop` target your template's kick/snare/hat channels without hardcoding indices.
 
 The config supports `template.one_based=true` if you prefer writing channels as 1..N (the app/server will subtract 1 internally).
+You can also set `rpc.timeout_s` in the same config to control how long MCP waits for FL bridge responses before returning an error payload.
+
+CLI override:
+
+```powershell
+.\.venv\Scripts\python -m fl_studio_agent_mcp.server --backend midi --midi-in "fl-agent 0" --midi-out "fl-agent 1" --rpc-timeout 3.5
+```
 
 ## Ollama agent (optional)
 

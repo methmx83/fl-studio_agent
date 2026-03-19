@@ -12,10 +12,12 @@ from mcp.server.fastmcp import FastMCP
 from .file_transport import FileBridgeClient
 from .midi_transport import MidiBridgeClient
 from .patterns import on_steps, render
+from .rpc_utils import coerce_timeout, safe_rpc
 
 
 def _default_fl_path() -> str:
     return r"C:\Program Files\Image-Line\FL Studio 2025\FL64.exe"
+
 
 def _load_config(path: str | None) -> dict:
     if not path:
@@ -82,6 +84,7 @@ def create_app(
     backend: str = "auto",
     ipc_dir: str | None = None,
     config_path: str | None = None,
+    rpc_timeout_s: float | None = None,
 ) -> FastMCP:
     mcp = FastMCP("fl-studio-agent")
     client = _create_client(backend, midi_port=midi_port, midi_in=midi_in, midi_out=midi_out, ipc_dir=ipc_dir)
@@ -90,6 +93,8 @@ def create_app(
     template_cfg = (cfg.get("template") or {}) if isinstance(cfg, dict) else {}
     chan_cfg = (template_cfg.get("channels") or {}) if isinstance(template_cfg, dict) else {}
     one_based = bool(template_cfg.get("one_based", False)) if isinstance(template_cfg, dict) else False
+    rpc_cfg = (cfg.get("rpc") or {}) if isinstance(cfg, dict) else {}
+    default_timeout_s = coerce_timeout(rpc_timeout_s, default=coerce_timeout(rpc_cfg.get("timeout_s"), default=2.0))
 
     def _ch(name: str, default: int) -> int:
         v = chan_cfg.get(name, default)
@@ -104,8 +109,7 @@ def create_app(
     @mcp.tool()
     def fl_ping() -> dict[str, Any]:
         """Round-trip test to the FL Studio bridge."""
-        res = client.rpc("ping", timeout_s=2.0)
-        return res.payload
+        return safe_rpc(client, "ping", timeout_s=default_timeout_s)
 
     @mcp.tool()
     def fl_launch() -> dict[str, Any]:
@@ -118,14 +122,12 @@ def create_app(
     @mcp.tool()
     def fl_get_tempo() -> dict[str, Any]:
         """Get current FL Studio tempo."""
-        res = client.rpc("get_tempo", timeout_s=2.0)
-        return res.payload
+        return safe_rpc(client, "get_tempo", timeout_s=default_timeout_s)
 
     @mcp.tool()
     def fl_set_tempo(bpm: float) -> dict[str, Any]:
         """Set FL Studio tempo in BPM."""
-        res = client.rpc("set_tempo", {"bpm": bpm}, timeout_s=2.0)
-        return res.payload
+        return safe_rpc(client, "set_tempo", {"bpm": bpm}, timeout_s=default_timeout_s)
 
     @mcp.tool()
     def fl_create_drum_loop(
@@ -136,7 +138,8 @@ def create_app(
         steps: int = 16,
     ) -> dict[str, Any]:
         """Program a simple 4/4 drum loop via step sequencer grid bits."""
-        res = client.rpc(
+        return safe_rpc(
+            client,
             "create_drum_loop",
             {
                 "bpm": bpm,
@@ -145,9 +148,8 @@ def create_app(
                 "hat_channel": hat_channel,
                 "steps": steps,
             },
-            timeout_s=3.0,
+            timeout_s=default_timeout_s,
         )
-        return res.payload
 
     @mcp.tool()
     def fl_create_4_4_drumloop(
@@ -225,12 +227,12 @@ def create_app(
             if clap is not None and pat.clap:
                 tracks[-1]["velocities"] = vel_map(tracks[-1]["on_steps"], base=108, accent_every=8)
 
-        res = client.rpc(
+        return safe_rpc(
+            client,
             "set_stepseq",
             {"bpm": bpm, "steps_per_bar": steps_per_bar, "bars": bars, "total_steps": total_steps, "tracks": tracks},
-            timeout_s=4.0,
+            timeout_s=default_timeout_s,
         )
-        return res.payload
 
     return mcp
 
@@ -253,6 +255,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ipc-dir", default=None, help="IPC base dir for file backend (default: TEMP\\fl_studio_agent_ipc)")
     parser.add_argument("--fl-path", default=_default_fl_path(), help="Path to FL64.exe")
     parser.add_argument("--config", default=None, help="Optional JSON config (see fl_agent_config.example.json)")
+    parser.add_argument(
+        "--rpc-timeout",
+        type=float,
+        default=None,
+        help="RPC timeout in seconds for FL bridge calls (overrides config rpc.timeout_s).",
+    )
     args = parser.parse_args(argv)
 
     # Allow config to provide default MIDI port names.
@@ -272,6 +280,7 @@ def main(argv: list[str] | None = None) -> int:
         backend=args.backend,
         ipc_dir=args.ipc_dir,
         config_path=args.config,
+        rpc_timeout_s=args.rpc_timeout,
     )
     app.run()
     return 0

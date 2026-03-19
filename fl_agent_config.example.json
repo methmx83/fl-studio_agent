@@ -3,6 +3,9 @@
     "in": "fl-agent 0",
     "out": "fl-agent 1"
   },
+  "rpc": {
+    "timeout_s": 2.5
+  },
   "template": {
     "one_based": true,
     "channels": {
