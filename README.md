@@ -116,6 +116,11 @@ If the system's MIDI stack doesn't expose your virtual port to the Python backen
 
 This uses `%TEMP%\fl_studio_agent_ipc\in` for requests and `%TEMP%\fl_studio_agent_ipc\out` for responses. The FL bridge processes one request per `OnIdle` tick.
 
+## Roadmap / Backlog
+
+- `NEXT_STEPS.md` tracks the short-term build plan.
+- `TODO.md` collects the broader backlog for stability, features, and repo hygiene.
+
 ## Notes
 
 - This project uses SysEx messages and a small custom protocol. Payloads are Base64-encoded so they stay 7-bit clean.
