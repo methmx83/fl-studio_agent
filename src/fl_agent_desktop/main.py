@@ -262,6 +262,21 @@ def main(argv: list[str] | None = None) -> int:
     def write_line(s: str) -> None:
         log.appendPlainText(s)
 
+    def describe_error(err: BaseException | None) -> str:
+        if err is None:
+            return ""
+        if isinstance(err, BaseExceptionGroup):
+            parts = [describe_error(exc) for exc in err.exceptions]
+            parts = [part for part in parts if part]
+            return " | ".join(parts) if parts else str(err)
+        msg = f"{type(err).__name__}: {err}"
+        cause = err.__cause__ or err.__context__
+        if cause is not None and cause is not err:
+            nested = describe_error(cause)
+            if nested and nested != msg:
+                msg += " <- " + nested
+        return msg
+
     def is_unknown_op_payload(payload: Any, op_name: str) -> bool:
         if not isinstance(payload, dict):
             return False
@@ -740,7 +755,7 @@ def main(argv: list[str] | None = None) -> int:
             def handle_finished(res, err):
                 btn_send.setEnabled(True)
                 if err:
-                    write_line(f"[error] ollama: {err}")
+                    write_line(f"[error] ollama: {describe_error(err)}")
                     return
                 if not isinstance(res, dict):
                     write_line(f"[error] ollama invalid result: {res!r}")
@@ -763,6 +778,13 @@ def main(argv: list[str] | None = None) -> int:
                     do_readback(title="Current FL Pattern")
 
             def work():
+                nonlocal client
+                if client is not None:
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+                    client = None
                 return run_ollama_mcp_agent_sync(
                     model=ollama_model.text().strip(),
                     ollama_url=ollama_url.text().strip(),

@@ -70,6 +70,36 @@ def _tool_summary(tools: list[Any]) -> str:
     return "\n".join(lines)
 
 
+def _normalize_tools(tools: Any) -> list[Any]:
+    if isinstance(tools, (list, tuple)):
+        return list(tools)
+    if hasattr(tools, "tools"):
+        value = getattr(tools, "tools")
+        if isinstance(value, list):
+            return value
+    raise TypeError(f"Unsupported tools payload: {type(tools).__name__}")
+
+
+def _jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, tuple):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if hasattr(value, "model_dump"):
+        try:
+            dumped = value.model_dump(mode="json", by_alias=True, exclude_none=True)
+        except TypeError:
+            dumped = value.model_dump()
+        return _jsonable(dumped)
+    if hasattr(value, "__dict__"):
+        return _jsonable(vars(value))
+    return repr(value)
+
+
 async def run_ollama_mcp_agent(
     *,
     model: str,
@@ -83,8 +113,8 @@ async def run_ollama_mcp_agent(
         "You are an assistant that controls FL Studio via MCP tools.\n"
         "Return ONLY JSON. No prose outside JSON.\n"
         "Each reply must be exactly one of these shapes:\n"
-        '{ "tool_calls": [ {"tool": "name", "args": {...}}, ... ] }\n'
-        '{ "final": "short result for the user" }\n'
+        '{{ "tool_calls": [ {{"tool": "name", "args": {{...}}}}, ... ] }}\n'
+        '{{ "final": "short result for the user" }}\n'
         "Use tools when runtime state matters. Do not invent tools or arguments.\n"
         "If the user asks to open FL Studio and create a drumloop, typically call fl_launch then fl_create_4_4_drumloop.\n"
         "Available tools:\n"
@@ -94,7 +124,7 @@ async def run_ollama_mcp_agent(
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            tools = await session.list_tools()
+            tools = _normalize_tools(await session.list_tools())
             messages: list[dict[str, Any]] = [
                 {"role": "system", "content": system.format(tool_summary=_tool_summary(tools))},
                 {"role": "user", "content": user_request},
@@ -114,6 +144,7 @@ async def run_ollama_mcp_agent(
                     for call in calls:
                         result = await session.call_tool(call.tool, call.args)
                         payload = result[1] if isinstance(result, tuple) and len(result) > 1 else result
+                        payload = _jsonable(payload)
                         record = {"tool": call.tool, "args": call.args, "result": payload}
                         executed.append(record)
                         round_results.append(record)

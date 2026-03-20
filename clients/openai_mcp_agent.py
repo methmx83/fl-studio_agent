@@ -37,6 +37,36 @@ def _openai_function_tools(tools: list[Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _normalize_tools(tools: Any) -> list[Any]:
+    if isinstance(tools, (list, tuple)):
+        return list(tools)
+    if hasattr(tools, "tools"):
+        value = getattr(tools, "tools")
+        if isinstance(value, list):
+            return value
+    raise TypeError(f"Unsupported tools payload: {type(tools).__name__}")
+
+
+def _jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, tuple):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if hasattr(value, "model_dump"):
+        try:
+            dumped = value.model_dump(mode="json", by_alias=True, exclude_none=True)
+        except TypeError:
+            dumped = value.model_dump()
+        return _jsonable(dumped)
+    if hasattr(value, "__dict__"):
+        return _jsonable(vars(value))
+    return repr(value)
+
+
 def _responses_create(
     *,
     api_key: str,
@@ -132,7 +162,7 @@ async def run_agent(
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            mcp_tools = await session.list_tools()
+            mcp_tools = _normalize_tools(await session.list_tools())
             response = _responses_create(
                 api_key=api_key,
                 base_url=openai_base_url,
@@ -157,6 +187,7 @@ async def run_agent(
                 for call in calls:
                     result = await session.call_tool(call["name"], call["arguments"])
                     payload = result[1] if isinstance(result, tuple) and len(result) > 1 else result
+                    payload = _jsonable(payload)
                     tool_results.append({"tool": call["name"], "args": call["arguments"], "result": payload})
                     outputs.append(
                         {

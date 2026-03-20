@@ -1,6 +1,6 @@
 import unittest
 
-from clients.openai_mcp_agent import _extract_function_calls, _openai_function_tools, _response_output_text
+from clients.openai_mcp_agent import _extract_function_calls, _jsonable, _normalize_tools, _openai_function_tools, _response_output_text
 
 
 class _FakeTool:
@@ -11,6 +11,20 @@ class _FakeTool:
 
 
 class OpenAIMcpAgentTests(unittest.TestCase):
+    def test_jsonable_uses_model_dump_for_tool_results(self) -> None:
+        class _Result:
+            def model_dump(self, **kwargs):
+                return {"ok": True}
+
+        self.assertEqual(_jsonable(_Result()), {"ok": True})
+
+    def test_normalize_tools_accepts_list_tools_result_shape(self) -> None:
+        class _Result:
+            def __init__(self):
+                self.tools = ["x"]
+
+        self.assertEqual(_normalize_tools(_Result()), ["x"])
+
     def test_openai_function_tools_uses_mcp_schema(self) -> None:
         tools = _openai_function_tools([_FakeTool("fl_ping", "Ping FL", {"type": "object", "properties": {}})])
         self.assertEqual(
