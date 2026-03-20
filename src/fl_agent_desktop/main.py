@@ -11,6 +11,7 @@ from functools import partial
 from typing import Any, Callable
 
 from fl_studio_agent_mcp.midi_transport import MidiBridgeClient
+from fl_studio_agent_mcp.ollama_agent import run_ollama_mcp_agent_sync
 from fl_studio_agent_mcp.patterns import normalize_key_scale, on_steps, render_with_bassline
 from fl_studio_agent_mcp.server import _default_fl_path
 
@@ -337,6 +338,25 @@ def main(argv: list[str] | None = None) -> int:
         if mode not in ("step", "step_pitch", "piano_roll"):
             mode = "step_pitch"
         return mode
+
+    def current_mcp_command() -> list[str]:
+        cmd = [
+            sys.executable,
+            "-m",
+            "fl_studio_agent_mcp.server",
+            "--backend",
+            "midi",
+            "--midi-in",
+            midi_in.text().strip(),
+            "--midi-out",
+            midi_out.text().strip(),
+            "--fl-path",
+            fl_path.text().strip(),
+        ]
+        config_value = cfg_path.text().strip()
+        if config_value:
+            cmd.extend(["--config", config_value])
+        return cmd
 
     def set_loop_settings(bpm: float, style: str, bars: int) -> None:
         bpm_input.setValue(float(bpm))
@@ -714,22 +734,41 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
         if chk_llm.isChecked():
-            write_line("[ui] ollama planning...")
+            write_line("[ui] ollama agent running...")
             btn_send.setEnabled(False)
 
             def handle_finished(res, err):
                 btn_send.setEnabled(True)
                 if err:
                     write_line(f"[error] ollama: {err}")
-                    cmd = parse_command(text)
-                    write_line(f"[parsed:fallback] {asdict(cmd)}")
-                    apply_plan(cmd.launch, cmd.create_drumloop, cmd.bpm, cmd.style, cmd.bars, cmd.key, cmd.scale, "fallback")
-                else:
-                    write_line(f"[ollama] {asdict(res)}")
-                    apply_plan(res.launch, res.create_drumloop, res.bpm, res.style, res.bars, res.key, res.scale, "ollama")
+                    return
+                if not isinstance(res, dict):
+                    write_line(f"[error] ollama invalid result: {res!r}")
+                    return
+                tool_results = res.get("tool_results", [])
+                for entry in tool_results:
+                    if not isinstance(entry, dict):
+                        continue
+                    tool_name = str(entry.get("tool", "?"))
+                    tool_args = entry.get("args", {})
+                    tool_result = entry.get("result", {})
+                    write_line(f"[ollama-tool] {tool_name} args={tool_args} result={tool_result}")
+                final_text = str(res.get("final_text", "") or "").strip()
+                if final_text:
+                    write_line(f"[ollama-final] {final_text}")
+                if any(
+                    isinstance(entry, dict) and str(entry.get("tool")) in ("fl_create_drum_loop", "fl_create_4_4_drumloop", "fl_get_stepseq")
+                    for entry in tool_results
+                ):
+                    do_readback(title="Current FL Pattern")
 
             def work():
-                return plan_with_ollama(text, model=ollama_model.text().strip(), url=ollama_url.text().strip())
+                return run_ollama_mcp_agent_sync(
+                    model=ollama_model.text().strip(),
+                    ollama_url=ollama_url.text().strip(),
+                    mcp_command=current_mcp_command(),
+                    user_request=text,
+                )
 
             runner.run(work, handle_finished)
             return

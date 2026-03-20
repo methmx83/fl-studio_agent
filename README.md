@@ -87,6 +87,13 @@ If you want a simple natural-language CLI that uses an Ollama model to decide wh
 
 This spawns the MCP server via stdio, asks Ollama for tool calls, and prints the tool results as JSON.
 
+Current behavior:
+
+- `run_ollama_agent.ps1` now uses a real MCP tool loop.
+- The model can choose tools, receive tool results, and decide on further tool calls before producing a final answer.
+- In the desktop app, `Use Ollama` on `Send` now uses the same MCP-based agent flow.
+- `Preview Prompt` remains a lightweight planning preview and does not execute MCP tools.
+
 ## OpenAI / GPT-5.x agent (optional)
 
 If you want the same MCP-driven CLI flow with an OpenAI model:
