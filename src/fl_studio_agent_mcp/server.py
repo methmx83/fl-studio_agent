@@ -135,6 +135,20 @@ def _rpc_call(client: Any, op: str, args: dict[str, Any] | None = None, *, timeo
     )
 
 
+def _coerce_optional_channel(chan_cfg: dict[str, Any], name: str, *, one_based: bool) -> int | None:
+    if name not in chan_cfg:
+        return None
+    try:
+        value = int(chan_cfg.get(name))
+    except Exception:
+        return None
+    if one_based:
+        value -= 1
+    if value < 0:
+        return None
+    return value
+
+
 def _create_client(
     backend: str,
     *,
@@ -262,20 +276,19 @@ def create_app(
         snare_channel: int = 1,
         hat_channel: int = 2,
         steps: int = 16,
+        pattern_index: int | None = None,
     ) -> dict[str, Any]:
         """Program a simple 4/4 drum loop via step sequencer grid bits."""
-        return _rpc_call(
-            client,
-            "create_drum_loop",
-            {
-                "bpm": bpm,
-                "kick_channel": kick_channel,
-                "snare_channel": snare_channel,
-                "hat_channel": hat_channel,
-                "steps": steps,
-            },
-            timeout_s=max(rpc_timeout, 3.0),
-        )
+        args = {
+            "bpm": bpm,
+            "kick_channel": kick_channel,
+            "snare_channel": snare_channel,
+            "hat_channel": hat_channel,
+            "steps": steps,
+        }
+        if pattern_index is not None:
+            args["pattern_index"] = max(1, int(pattern_index))
+        return _rpc_call(client, "create_drum_loop", args, timeout_s=max(rpc_timeout, 3.0))
 
     @mcp.tool()
     def fl_create_4_4_drumloop(
@@ -294,6 +307,7 @@ def create_app(
         include_bass: bool = True,
         use_velocities: bool = False,
         humanize: int = 6,
+        pattern_index: int | None = None,
     ) -> dict[str, Any]:
         """
         High-level beat tool: create a 4/4 drumloop at `bpm` using a named `style`.
@@ -310,20 +324,8 @@ def create_app(
         kick = int(kick_channel) if kick_channel is not None else _ch("kick", 0)
         snare = int(snare_channel) if snare_channel is not None else _ch("snare", 1)
         hat = int(hat_channel) if hat_channel is not None else _ch("hat", 2)
-        clap = clap_channel if clap_channel is not None else (chan_cfg.get("clap", None))
-        if clap is not None:
-            clap = int(clap)
-            if one_based:
-                clap -= 1
-            if clap < 0:
-                clap = None
-        bass = bass_channel if bass_channel is not None else (chan_cfg.get("bass", None))
-        if bass is not None:
-            bass = int(bass)
-            if one_based:
-                bass -= 1
-            if bass < 0:
-                bass = None
+        clap = int(clap_channel) if clap_channel is not None else _coerce_optional_channel(chan_cfg, "clap", one_based=one_based)
+        bass = int(bass_channel) if bass_channel is not None else _coerce_optional_channel(chan_cfg, "bass", one_based=one_based)
 
         total_steps = steps_per_bar * bars
         norm_key, norm_scale = normalize_key_scale(key, scale)
@@ -378,6 +380,7 @@ def create_app(
                 "total_steps": total_steps,
                 "bass_mode": bass_mode_norm,
                 "tracks": tracks,
+                "pattern_index": max(1, int(pattern_index)) if pattern_index is not None else None,
             },
             timeout_s=max(rpc_timeout_loop, rpc_timeout),
         )
@@ -389,6 +392,65 @@ def create_app(
             if isinstance(result, dict):
                 result["bassline"] = {"key": norm_key, "scale": norm_scale, "mode": bass_mode_norm, "events": bassline}
         return out
+
+    @mcp.tool()
+    def fl_get_stepseq(
+        channels: list[int] | None = None,
+        total_steps: int | None = None,
+        include_step_params: bool = True,
+        pattern_index: int | None = None,
+    ) -> dict[str, Any]:
+        """Read the current step sequencer pattern state for configured or explicit channels."""
+        if total_steps is not None:
+            try:
+                total_steps = int(total_steps)
+            except Exception:
+                return _error_result(
+                    "INVALID_ARGUMENT",
+                    "total_steps must be an integer >= 1",
+                    operation="get_stepseq",
+                    details={"total_steps": total_steps},
+                )
+            if total_steps < 1:
+                return _error_result(
+                    "INVALID_ARGUMENT",
+                    "total_steps must be an integer >= 1",
+                    operation="get_stepseq",
+                    details={"total_steps": total_steps},
+                )
+
+        tracks: list[dict[str, Any]] = []
+        if channels is not None:
+            try:
+                tracks = [{"channel": int(ch)} for ch in channels]
+            except Exception:
+                return _error_result(
+                    "INVALID_ARGUMENT",
+                    "channels must be a list of integers",
+                    operation="get_stepseq",
+                    details={"channels": channels},
+                )
+        else:
+            tracks.extend(
+                [
+                    {"name": "kick", "channel": _ch("kick", 0)},
+                    {"name": "snare", "channel": _ch("snare", 1)},
+                    {"name": "hat", "channel": _ch("hat", 2)},
+                ]
+            )
+            clap = _coerce_optional_channel(chan_cfg, "clap", one_based=one_based)
+            bass = _coerce_optional_channel(chan_cfg, "bass", one_based=one_based)
+            if clap is not None:
+                tracks.append({"name": "clap", "channel": clap})
+            if bass is not None:
+                tracks.append({"name": "bass", "channel": bass})
+
+        args: dict[str, Any] = {"tracks": tracks, "include_step_params": bool(include_step_params)}
+        if total_steps is not None:
+            args["total_steps"] = total_steps
+        if pattern_index is not None:
+            args["pattern_index"] = max(1, int(pattern_index))
+        return _rpc_call(client, "get_stepseq", args, timeout_s=max(rpc_timeout_loop, rpc_timeout))
 
     return mcp
 

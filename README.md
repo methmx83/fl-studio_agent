@@ -87,6 +87,24 @@ If you want a simple natural-language CLI that uses an Ollama model to decide wh
 
 This spawns the MCP server via stdio, asks Ollama for tool calls, and prints the tool results as JSON.
 
+## OpenAI / GPT-5.x agent (optional)
+
+If you want the same MCP-driven CLI flow with an OpenAI model:
+
+1. Set your API key:
+
+```powershell
+$env:OPENAI_API_KEY = "sk-..."
+```
+
+2. Run:
+
+```powershell
+.\scripts\run_openai_agent.ps1 -Model gpt-5.4 -Request "Open FL Studio and create a 4/4 drumloop at 94 BPM"
+```
+
+This starts the MCP server via stdio, sends the request to the OpenAI Responses API, executes any returned MCP tool calls locally, and prints a structured JSON result with tool outputs plus the model's final text.
+
 ## Desktop app (optional)
 
 Minimal Windows desktop UI (chat + preset buttons) that talks to the MIDI bridge directly.

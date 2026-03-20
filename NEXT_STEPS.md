@@ -73,15 +73,13 @@ For broader backlog items, keep `TODO.md` as source of truth. This list is the p
 
 ### 4) Pattern read-back and multi-pattern workflow
 
-- Add bridge/server method to read current step pattern state.
-- Surface read-back in desktop UI for before/after verification.
-- Add `pattern_index` support to loop tools for multi-pattern projects.
+- Status: done on 2026-03-20.
+- Done: bridge/server method added to read current step pattern state, including active step indices plus optional velocity/pitch read-back.
+- Done: desktop UI now surfaces read-back and shows before/after snapshots around loop writes, plus manual refresh.
+- Done: `pattern_index` support added for loop write/read flows so non-active FL patterns can be targeted explicitly.
 
 ### 5) OpenClaw / GPT-5.x connector
 
-When integrating on the main workstation, define:
-- OpenClaw repo/docs reference,
-- MCP transport mode (`stdio` vs `http`),
-- auth/process model for local tool execution.
-
-Then add adapter so GPT-5.x can use the same MCP tool surface.
+- Status: done on 2026-03-20.
+- Done: integration baseline documented in `docs/OPENCLAW_GPT5_CONNECTOR.md`, including OpenClaw repo/docs reference, `stdio` recommendation for local MCP transport, and local `OPENAI_API_KEY` adapter process model.
+- Done: local OpenAI / GPT-5.x adapter added (`clients/openai_mcp_agent.py` + `scripts/run_openai_agent.ps1`) using the same MCP tool surface via `stdio`.

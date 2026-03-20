@@ -17,6 +17,7 @@ from fl_studio_agent_mcp.server import _default_fl_path
 from .pattern_preview import pattern_preview_lines
 from .parse import parse_command
 from .ollama import plan_with_ollama
+from .stepseq_readback import format_stepseq_snapshot
 from .ui_state import (
     DEFAULT_CHANNEL_MAP,
     PRESET_SETTINGS,
@@ -139,6 +140,9 @@ def main(argv: list[str] | None = None) -> int:
     bars_input = QtWidgets.QSpinBox()
     bars_input.setRange(1, 16)
     bars_input.setValue(1)
+    pattern_input = QtWidgets.QSpinBox()
+    pattern_input.setRange(1, 999)
+    pattern_input.setValue(1)
     style_input = QtWidgets.QComboBox()
     style_input.addItems(list(STYLE_OPTIONS))
     key_input = QtWidgets.QLineEdit("C")
@@ -159,6 +163,8 @@ def main(argv: list[str] | None = None) -> int:
     performance.addWidget(bpm_input)
     performance.addWidget(QtWidgets.QLabel("Bars:"))
     performance.addWidget(bars_input)
+    performance.addWidget(QtWidgets.QLabel("Pattern:"))
+    performance.addWidget(pattern_input)
     performance.addWidget(QtWidgets.QLabel("Style:"))
     performance.addWidget(style_input, 1)
     performance.addWidget(QtWidgets.QLabel("Key:"))
@@ -181,6 +187,21 @@ def main(argv: list[str] | None = None) -> int:
     preview.setMinimumHeight(130)
     preview_layout.addWidget(preview)
     layout.addWidget(preview_box)
+
+    readback_box = QtWidgets.QGroupBox("FL Read-Back")
+    readback_layout = QtWidgets.QVBoxLayout(readback_box)
+    readback_toolbar = QtWidgets.QHBoxLayout()
+    readback_status = QtWidgets.QLabel("No FL read-back yet")
+    btn_readback = QtWidgets.QPushButton("Read Back")
+    readback_toolbar.addWidget(readback_status, 1)
+    readback_toolbar.addWidget(btn_readback)
+    readback = QtWidgets.QPlainTextEdit()
+    readback.setReadOnly(True)
+    readback.setMaximumBlockCount(64)
+    readback.setMinimumHeight(170)
+    readback_layout.addLayout(readback_toolbar)
+    readback_layout.addWidget(readback)
+    layout.addWidget(readback_box)
 
     mapping_box = QtWidgets.QGroupBox("Template Mapping")
     mapping_layout = QtWidgets.QFormLayout(mapping_box)
@@ -342,6 +363,23 @@ def main(argv: list[str] | None = None) -> int:
         lines.insert(0, f"BPM: {bpm:g}")
         preview.setPlainText("\n".join(lines))
 
+    def readback_track_specs() -> list[dict[str, Any]]:
+        tracks: list[dict[str, Any]] = [
+            {"name": "kick", "channel": ch("kick", 0)},
+            {"name": "snare", "channel": ch("snare", 1)},
+            {"name": "hat", "channel": ch("hat", 2)},
+        ]
+        if "clap" in channel_map:
+            tracks.append({"name": "clap", "channel": ch("clap", 3)})
+        if "bass" in channel_map:
+            tracks.append({"name": "bass", "channel": ch("bass", 4)})
+        return tracks
+
+    def set_readback_sections(*sections: tuple[str, dict[str, Any] | None]) -> None:
+        chunks = ["\n".join(format_stepseq_snapshot(title, payload)) for title, payload in sections]
+        readback.setPlainText("\n\n".join(chunk for chunk in chunks if chunk.strip()))
+        readback_status.setText("Updated")
+
     def ensure_client() -> MidiBridgeClient:
         nonlocal client
         if client is None:
@@ -378,6 +416,40 @@ def main(argv: list[str] | None = None) -> int:
         subprocess.Popen([exe], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         write_line("[ui] launched FL Studio")
 
+    def do_readback(*, title: str = "Current FL Pattern") -> None:
+        total_steps = 16 * int(bars_input.value())
+        pattern_index = int(pattern_input.value())
+
+        def work():
+            c = ensure_client()
+            return c.rpc(
+                "get_stepseq",
+                {
+                    "tracks": readback_track_specs(),
+                    "total_steps": total_steps,
+                    "include_step_params": True,
+                    "pattern_index": pattern_index,
+                },
+                timeout_s=4.0,
+            ).payload
+
+        def cb(res, err):
+            if err:
+                readback_status.setText("Read-back failed")
+                write_line(f"[error] read-back: {err}")
+                return
+            set_readback_sections((title, res if isinstance(res, dict) else None))
+            if isinstance(res, dict) and not bool(res.get("ok", False)):
+                write_line(f"[error] read-back: {res}")
+                if is_unknown_op_payload(res, "get_stepseq"):
+                    log_bridge_update_hint("get_stepseq")
+                return
+            track_count = len(res.get("result", {}).get("tracks", [])) if isinstance(res, dict) else 0
+            write_line(f"[ok] read-back: {track_count} track(s)")
+
+        readback_status.setText("Reading...")
+        runner.run(work, cb)
+
     def do_drumloop(
         bpm: float,
         style: str,
@@ -386,11 +458,13 @@ def main(argv: list[str] | None = None) -> int:
         key: str | None = None,
         scale: str | None = None,
         bass_mode: str | None = None,
+        pattern_index: int | None = None,
     ) -> None:
         norm_key, norm_scale = normalize_key_scale(key, scale)
         mode = (bass_mode or current_bass_mode()).strip().lower()
         if mode not in ("step", "step_pitch", "piano_roll"):
             mode = "step_pitch"
+        pat_num = max(1, int(pattern_index if pattern_index is not None else pattern_input.value()))
 
         def work():
             c = ensure_client()
@@ -419,6 +493,22 @@ def main(argv: list[str] | None = None) -> int:
                     bass_track["pitches"] = {str(ev.step): int(ev.midi) for ev in pat.bass_notes}
                 tracks.append(bass_track)
 
+            readback_tracks = readback_track_specs()
+            before_payload = None
+            try:
+                before_payload = c.rpc(
+                    "get_stepseq",
+                    {
+                        "tracks": readback_tracks,
+                        "total_steps": total_steps,
+                        "include_step_params": True,
+                        "pattern_index": pat_num,
+                    },
+                    timeout_s=4.0,
+                ).payload
+            except Exception as e:  # noqa: BLE001
+                before_payload = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
             rpc_payload = c.rpc(
                 "set_stepseq",
                 {
@@ -427,12 +517,32 @@ def main(argv: list[str] | None = None) -> int:
                     "bars": bars,
                     "total_steps": total_steps,
                     "bass_mode": mode,
+                    "pattern_index": pat_num,
                     "tracks": tracks,
                 },
                 timeout_s=6.0,
             ).payload
+            after_payload = None
+            try:
+                after_payload = c.rpc(
+                    "get_stepseq",
+                    {
+                        "tracks": readback_tracks,
+                        "total_steps": total_steps,
+                        "include_step_params": True,
+                        "pattern_index": pat_num,
+                    },
+                    timeout_s=4.0,
+                ).payload
+            except Exception as e:  # noqa: BLE001
+                after_payload = {"ok": False, "error": f"{type(e).__name__}: {e}"}
             bassline = [{"step": ev.step, "degree": ev.degree, "note": ev.note} for ev in (pat.bass_notes or [])]
-            return {"rpc": rpc_payload, "bassline": {"key": norm_key, "scale": norm_scale, "mode": mode, "events": bassline}}
+            return {
+                "rpc": rpc_payload,
+                "before": before_payload,
+                "after": after_payload,
+                "bassline": {"key": norm_key, "scale": norm_scale, "mode": mode, "events": bassline},
+            }
 
         def cb(res, err):
             if err:
@@ -441,13 +551,23 @@ def main(argv: list[str] | None = None) -> int:
                 rpc_payload = res.get("rpc", {}) if isinstance(res, dict) else {}
                 if isinstance(rpc_payload, dict) and not bool(rpc_payload.get("ok", False)):
                     write_line(f"[error] drumloop ({style}, {bpm} bpm, {bars} bar): {rpc_payload}")
+                    set_readback_sections(
+                        ("Before write", res.get("before") if isinstance(res, dict) else None),
+                        ("After write", res.get("after") if isinstance(res, dict) else None),
+                    )
+                    if is_unknown_op_payload(rpc_payload, "set_stepseq"):
+                        log_bridge_update_hint("set_stepseq")
                     return
+                set_readback_sections(
+                    ("Before write", res.get("before") if isinstance(res, dict) else None),
+                    ("After write", res.get("after") if isinstance(res, dict) else None),
+                )
                 bassline = (res.get("bassline", {}) if isinstance(res, dict) else {})
                 ev = bassline.get("events", []) if isinstance(bassline, dict) else []
                 mode_out = bassline.get("mode", mode) if isinstance(bassline, dict) else mode
                 preview_notes = ", ".join(f"{x['step']}:{x['note']}({x['degree']})" for x in ev[:6]) if ev else "-"
                 write_line(
-                    f"[ok] drumloop ({style}, {bpm} bpm, {bars} bar, {norm_key} {norm_scale}, {mode_out}): {rpc_payload} | bass: {preview_notes}"
+                    f"[ok] drumloop (pattern {pat_num}, {style}, {bpm} bpm, {bars} bar, {norm_key} {norm_scale}, {mode_out}): {rpc_payload} | bass: {preview_notes}"
                 )
 
         runner.run(work, cb)
@@ -455,7 +575,15 @@ def main(argv: list[str] | None = None) -> int:
     def on_create_loop() -> None:
         bpm, style, bars = current_loop_settings()
         key, scale = current_tonal_settings()
-        do_drumloop(bpm=bpm, style=style, bars=bars, key=key, scale=scale, bass_mode=current_bass_mode())
+        do_drumloop(
+            bpm=bpm,
+            style=style,
+            bars=bars,
+            key=key,
+            scale=scale,
+            bass_mode=current_bass_mode(),
+            pattern_index=int(pattern_input.value()),
+        )
 
     def do_transport(action: str, *, timeout_s: float = 1.5) -> None:
         action = action.strip().lower()
@@ -582,6 +710,7 @@ def main(argv: list[str] | None = None) -> int:
                     key=target_key,
                     scale=target_scale,
                     bass_mode=current_bass_mode(),
+                    pattern_index=int(pattern_input.value()),
                 )
 
         if chk_llm.isChecked():
@@ -674,12 +803,14 @@ def main(argv: list[str] | None = None) -> int:
     btn_stop.clicked.connect(lambda: do_transport("stop"))
     btn_record.clicked.connect(lambda: do_transport("record"))
     btn_panic.clicked.connect(on_panic)
+    btn_readback.clicked.connect(lambda: do_readback())
     btn_preview_prompt.clicked.connect(on_preview_prompt)
     btn_send.clicked.connect(on_send)
     inp.returnPressed.connect(on_send)
     btn_cfg.clicked.connect(load_config)
     bpm_input.valueChanged.connect(lambda _value: update_pattern_preview())
     bars_input.valueChanged.connect(lambda _value: update_pattern_preview())
+    pattern_input.valueChanged.connect(lambda _value: do_readback(title="Current FL Pattern"))
     style_input.currentIndexChanged.connect(lambda _index: update_pattern_preview())
     key_input.editingFinished.connect(update_pattern_preview)
     scale_input.currentIndexChanged.connect(lambda _index: update_pattern_preview())

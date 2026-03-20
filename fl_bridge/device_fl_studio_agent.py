@@ -296,6 +296,46 @@ def _transport_action(action: str) -> dict:
     raise RuntimeError("No supported FL transport API path found for action=" + action)
 
 
+def _current_pattern_info(pat_num=None) -> tuple[int, int]:
+    if pat_num is None:
+        try:
+            pat_num = int(patterns.patternNumber())
+        except Exception:
+            pat_num = 1
+    else:
+        pat_num = int(pat_num)
+        if pat_num < 1:
+            pat_num = 1
+    try:
+        length_beats = int(patterns.getPatternLength(pat_num))
+    except Exception:
+        length_beats = 4
+    if length_beats < 1:
+        length_beats = 1
+    return pat_num, length_beats
+
+
+def _activate_pattern(pat_num: int) -> int:
+    prev_pat, _ = _current_pattern_info()
+    target_pat = max(1, int(pat_num))
+    if prev_pat == target_pat:
+        return prev_pat
+    if hasattr(patterns, "jumpToPattern"):
+        patterns.jumpToPattern(target_pat)
+        return prev_pat
+    raise RuntimeError("patterns.jumpToPattern is not available")
+
+
+def _get_current_step_param(ch: int, step: int, param: int) -> int:
+    if not hasattr(channels, "getCurrentStepParam"):
+        raise AttributeError("channels.getCurrentStepParam is not available")
+    fn = getattr(channels, "getCurrentStepParam")
+    try:
+        return int(fn(ch, step, param, False))
+    except TypeError:
+        return int(fn(ch, step, param))
+
+
 def _parse_and_dispatch(req) -> dict:
     op = req.get("op")
     args = req.get("args") or {}
@@ -325,15 +365,92 @@ def _parse_and_dispatch(req) -> dict:
         return {"ok": True, "result": {"bpm": float(mixer.getCurrentTempo()) / 1000.0}}
 
     if op == "get_pattern_info":
-        try:
-            pat = int(patterns.patternNumber())
-        except Exception:
-            pat = 1
-        try:
-            length_beats = int(patterns.getPatternLength(pat))
-        except Exception:
-            length_beats = None
+        pat, length_beats = _current_pattern_info(args.get("pat_num", args.get("pattern_index", None)))
         return {"ok": True, "result": {"pattern": pat, "length_beats": length_beats}}
+
+    if op == "get_stepseq":
+        tracks = args.get("tracks", None)
+        if tracks is None:
+            channel_list = args.get("channels") or []
+            if not isinstance(channel_list, list):
+                raise TypeError("channels must be a list")
+            tracks = [{"channel": int(ch)} for ch in channel_list]
+        if not isinstance(tracks, list):
+            raise TypeError("tracks must be a list")
+
+        pat_num, pattern_len_beats = _current_pattern_info(args.get("pat_num", args.get("pattern_index", None)))
+        total_steps = args.get("total_steps", None)
+        if total_steps is None:
+            total_steps = pattern_len_beats * 4
+        total_steps = max(1, int(total_steps))
+        max_param_steps = pattern_len_beats * 4
+        include_step_params = bool(args.get("include_step_params", True))
+        warnings = []
+        if include_step_params and not hasattr(channels, "getCurrentStepParam"):
+            warnings.append("step parameter read-back is not supported by this FL API")
+            include_step_params = False
+
+        out_tracks = []
+        restore_pat = None
+        try:
+            restore_pat = _activate_pattern(pat_num)
+            for tr in tracks:
+                if not isinstance(tr, dict):
+                    raise TypeError("each track must be an object")
+                ch = int(tr.get("channel"))
+                row = {"channel": ch, "on_steps": []}
+                name = tr.get("name")
+                if isinstance(name, str) and name.strip():
+                    row["name"] = name.strip()
+                velocities = {}
+                pitches = {}
+                track_error = None
+                for s in range(total_steps):
+                    try:
+                        enabled = bool(channels.getGridBit(ch, s))
+                    except TypeError:
+                        enabled = bool(channels.getGridBit(ch, s, False))
+                    except Exception as e:
+                        track_error = str(e)
+                        break
+                    if not enabled:
+                        continue
+                    row["on_steps"].append(s)
+                    if include_step_params and s < max_param_steps:
+                        try:
+                            velocities[str(s)] = _get_current_step_param(ch, s, 1)
+                        except Exception:
+                            pass
+                        try:
+                            pitches[str(s)] = _get_current_step_param(ch, s, 0)
+                        except Exception:
+                            pass
+                if velocities:
+                    row["velocities"] = velocities
+                if pitches:
+                    row["pitches"] = pitches
+                if track_error is not None:
+                    row["error"] = track_error
+                    warnings.append("step read-back failed for channel " + str(ch) + ": " + track_error)
+                out_tracks.append(row)
+        finally:
+            if restore_pat is not None and restore_pat != pat_num:
+                try:
+                    _activate_pattern(restore_pat)
+                except Exception:
+                    pass
+
+        return {
+            "ok": True,
+            "result": {
+                "pat_num": pat_num,
+                "pattern_len_beats": pattern_len_beats,
+                "total_steps": total_steps,
+                "max_param_steps": max_param_steps,
+                "tracks": out_tracks,
+                "warnings": warnings,
+            },
+        }
 
     if op == "set_tempo":
         bpm = float(args.get("bpm"))
@@ -375,26 +492,38 @@ def _parse_and_dispatch(req) -> dict:
         snare = int(args.get("snare_channel", 1))
         hat = int(args.get("hat_channel", 2))
         steps = int(args.get("steps", 16))
+        pat_num = int(args.get("pat_num", args.get("pattern_index", 0) or 0))
 
         _set_tempo_bpm(bpm)
 
-        # clear + set steps
-        for ch in (kick, snare, hat):
-            for s in range(steps):
-                channels.setGridBit(ch, s, False)
+        restore_pat = None
+        if pat_num > 0:
+            restore_pat = _activate_pattern(pat_num)
+        try:
+            pat_num, _ = _current_pattern_info(pat_num if pat_num > 0 else None)
+            # clear + set steps
+            for ch in (kick, snare, hat):
+                for s in range(steps):
+                    channels.setGridBit(ch, s, False)
 
-        # 4-on-the-floor kick
-        for s in range(0, steps, 4):
-            channels.setGridBit(kick, s, True)
+            # 4-on-the-floor kick
+            for s in range(0, steps, 4):
+                channels.setGridBit(kick, s, True)
 
-        # backbeat snare on 2 and 4 (assuming 16 steps = 1 bar, 4 steps per beat)
-        if steps >= 16:
-            channels.setGridBit(snare, 4, True)
-            channels.setGridBit(snare, 12, True)
+            # backbeat snare on 2 and 4 (assuming 16 steps = 1 bar, 4 steps per beat)
+            if steps >= 16:
+                channels.setGridBit(snare, 4, True)
+                channels.setGridBit(snare, 12, True)
 
-        # 8th hats
-        for s in range(0, steps, 2):
-            channels.setGridBit(hat, s, True)
+            # 8th hats
+            for s in range(0, steps, 2):
+                channels.setGridBit(hat, s, True)
+        finally:
+            if restore_pat is not None and restore_pat != pat_num:
+                try:
+                    _activate_pattern(restore_pat)
+                except Exception:
+                    pass
 
         return {
             "ok": True,
@@ -404,6 +533,7 @@ def _parse_and_dispatch(req) -> dict:
                 "snare_channel": snare,
                 "hat_channel": hat,
                 "steps": steps,
+                "pat_num": pat_num,
             },
         }
 
@@ -416,7 +546,7 @@ def _parse_and_dispatch(req) -> dict:
         bars = int(args.get("bars", 1))
         total_steps = int(args.get("total_steps", steps_per_bar * bars))
         # 1-indexed pattern number. Default to the currently active pattern.
-        pat_num = args.get("pat_num", None)
+        pat_num = args.get("pat_num", args.get("pattern_index", None))
         if pat_num is None:
             try:
                 pat_num = patterns.patternNumber()
@@ -424,12 +554,7 @@ def _parse_and_dispatch(req) -> dict:
                 pat_num = 1
         pat_num = int(pat_num)
 
-        try:
-            pattern_len_beats = int(patterns.getPatternLength(pat_num))
-        except Exception:
-            pattern_len_beats = 4
-        if pattern_len_beats < 1:
-            pattern_len_beats = 1
+        pat_num, pattern_len_beats = _current_pattern_info(pat_num)
         # setStepParameterByIndex appears to be limited to the pattern length.
         max_param_steps = pattern_len_beats * 4
         bass_mode = str(args.get("bass_mode", "step")).strip().lower()
@@ -443,57 +568,65 @@ def _parse_and_dispatch(req) -> dict:
             bass_mode = "step_pitch"
 
         tracks = args.get("tracks") or []
-        # track: { "channel": int, "on_steps": [int], "velocities": { "step": int } }
-        for tr in tracks:
-            ch = int(tr.get("channel"))
-            # clear
-            for s in range(total_steps):
-                channels.setGridBit(ch, s, False)
+        restore_pat = _activate_pattern(pat_num)
+        try:
+            # track: { "channel": int, "on_steps": [int], "velocities": { "step": int } }
+            for tr in tracks:
+                ch = int(tr.get("channel"))
+                # clear
+                for s in range(total_steps):
+                    channels.setGridBit(ch, s, False)
 
-        for tr in tracks:
-            ch = int(tr.get("channel"))
-            on_steps = tr.get("on_steps") or []
-            for s in on_steps:
-                channels.setGridBit(ch, int(s), True)
+            for tr in tracks:
+                ch = int(tr.get("channel"))
+                on_steps = tr.get("on_steps") or []
+                for s in on_steps:
+                    channels.setGridBit(ch, int(s), True)
 
-            velocities = tr.get("velocities") or {}
-            # Step parameter type 1 is velocity (0..127).
-            failed = False
-            for k, v in velocities.items():
-                step = int(k)
-                if step < 0 or step >= max_param_steps:
-                    continue
-                vel = int(v)
-                if vel < 0:
-                    vel = 0
-                if vel > 127:
-                    vel = 127
-                try:
-                    channels.setStepParameterByIndex(ch, pat_num, step, 1, vel, False)
-                except Exception:
-                    # Some projects/patterns expose a smaller step-param range; don't fail the whole request.
-                    failed = True
-                    break
-
-            if bass_mode == "step_pitch":
-                pitches = tr.get("pitches") or {}
-                for k, v in pitches.items():
+                velocities = tr.get("velocities") or {}
+                # Step parameter type 1 is velocity (0..127).
+                failed = False
+                for k, v in velocities.items():
                     step = int(k)
                     if step < 0 or step >= max_param_steps:
                         continue
-                    pitch = int(v)
-                    if pitch < 0:
-                        pitch = 0
-                    if pitch > 127:
-                        pitch = 127
+                    vel = int(v)
+                    if vel < 0:
+                        vel = 0
+                    if vel > 127:
+                        vel = 127
                     try:
-                        # pPitch = 0 (see FL MIDI scripting docs step parameters table).
-                        channels.setStepParameterByIndex(ch, pat_num, step, 0, pitch, False)
+                        channels.setStepParameterByIndex(ch, pat_num, step, 1, vel, False)
                     except Exception:
+                        # Some projects/patterns expose a smaller step-param range; don't fail the whole request.
                         failed = True
                         break
-            if failed:
-                warnings.append("some step parameters could not be applied for channel " + str(ch))
+
+                if bass_mode == "step_pitch":
+                    pitches = tr.get("pitches") or {}
+                    for k, v in pitches.items():
+                        step = int(k)
+                        if step < 0 or step >= max_param_steps:
+                            continue
+                        pitch = int(v)
+                        if pitch < 0:
+                            pitch = 0
+                        if pitch > 127:
+                            pitch = 127
+                        try:
+                            # pPitch = 0 (see FL MIDI scripting docs step parameters table).
+                            channels.setStepParameterByIndex(ch, pat_num, step, 0, pitch, False)
+                        except Exception:
+                            failed = True
+                            break
+                if failed:
+                    warnings.append("some step parameters could not be applied for channel " + str(ch))
+        finally:
+            if restore_pat != pat_num:
+                try:
+                    _activate_pattern(restore_pat)
+                except Exception:
+                    pass
 
         return {
             "ok": True,
